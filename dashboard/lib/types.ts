@@ -1,0 +1,151 @@
+// Mirrors of the engine's API shapes (engine/src). Kept by hand: the engine is the source of truth.
+export type Venue = "pump_curve" | "pump_amm";
+
+export interface Status {
+  live: boolean;
+  simulation: boolean;
+  liveAllowed: boolean;
+  rpcConfigured: boolean;
+  marketSource: "stream" | "synthetic";
+  keystoreUnlocked: boolean;
+  jitoBlockEngine: string;
+}
+
+export interface ExitRule {
+  id: string;
+  kind: "take_profit" | "stop_loss";
+  triggerPct: number;
+  sellPct: number;
+  enabled: boolean;
+}
+
+export interface Settings {
+  simulation: boolean;
+  autoSnipe: boolean;
+  autoSnipeSol: number;
+  autoSnipeMaxPerHour: number;
+  autoSnipeKeywords: string[];
+  slippagePct: number;
+  priorityFeeMicroLamports: number;
+  computeUnitLimit: number;
+  jitoTipSol: number;
+  jitoTipDynamic: boolean;
+  jitoTipMaxSol: number;
+  exitRules: ExitRule[];
+  antiRug: {
+    enabled: boolean;
+    onCreatorSell: boolean;
+    crashPct: number;
+    onSupplyIncrease: boolean;
+    onLiquidityRemoval: boolean;
+    emergencyTipSol: number;
+  };
+  safety: {
+    requireMintAuthorityRevoked: boolean;
+    requireFreezeAuthorityRevoked: boolean;
+    rejectDangerousExtensions: boolean;
+    maxTopHolderPct: number;
+  };
+}
+
+export interface Wallet {
+  id: string;
+  name: string;
+  publicKey: string;
+  isMaster: boolean;
+  active: boolean;
+  createdAt: number;
+}
+
+export interface WalletBalance {
+  sol: number;
+  tokens: { mint: string; amount: number; program: string }[];
+  updatedAt: number;
+}
+
+export interface Position {
+  key: string;
+  walletId: string;
+  walletName: string;
+  mint: string;
+  symbol: string;
+  name: string;
+  creator: string;
+  venue: Venue;
+  mode: "sim" | "live";
+  tokens: number;
+  costSol: number;
+  entryPriceSol: number;
+  lastPriceSol: number;
+  peakPriceSol: number;
+  realizedPnlSol: number;
+  firedRules: string[];
+  openedAt: number;
+}
+
+export interface Metrics {
+  totalInvestedSol: number;
+  portfolioValueSol: number;
+  realizedPnlSol: number;
+  unrealizedPnlSol: number;
+  winRatePct: number;
+  closedCount: number;
+  openCount: number;
+  tradeCount: number;
+  jitoTipsSol: number;
+  feesSol: number;
+}
+
+export interface Launch {
+  mint: string;
+  name: string;
+  symbol: string;
+  creator: string;
+  priceSol: number;
+  marketCapSol: number;
+  ts: number;
+  signature?: string;
+  simulated: boolean;
+  sniped?: boolean;
+}
+
+export interface Trade {
+  id: string;
+  ts: number;
+  mode: "sim" | "live";
+  side: "buy" | "sell";
+  reason: string;
+  walletName: string;
+  mint: string;
+  symbol: string;
+  venue: Venue;
+  solAmount: number;
+  tokenAmount: number;
+  priceSol: number;
+  priorityFeeSol: number;
+  jitoTipSol: number;
+  networkFeeSol: number;
+  realizedPnlSol: number;
+  signature?: string;
+  bundleId?: string;
+}
+
+export interface LogLine {
+  id: number;
+  ts: number;
+  level: "info" | "success" | "warn" | "error" | "debug";
+  source: string;
+  msg: string;
+  signature?: string;
+  mint?: string;
+}
+
+export interface EngineState {
+  status: Status;
+  settings: Settings;
+  wallets: Wallet[];
+  balances: Record<string, WalletBalance>;
+  positions: Position[];
+  metrics: Metrics;
+  launches: Launch[];
+}

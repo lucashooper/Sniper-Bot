@@ -1,0 +1,12 @@
+{
+  "name": "sniper-bot",
+  "private": true,
+  "workspaces": ["engine", "dashboard"],
+  "scripts": {
+    "dev": "npm run dev --workspace engine & npm run dev --workspace dashboard",
+    "dev:engine": "npm run dev --workspace engine",
+    "dev:dashboard": "npm run dev --workspace dashboard",
+    "build": "npm run build --workspace engine && npm run build --workspace dashboard",
+    "typecheck": "npm run typecheck --workspace engine && npm run typecheck --workspace dashboard"
+  }
+}
