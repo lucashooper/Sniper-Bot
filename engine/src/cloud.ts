@@ -9,15 +9,34 @@ import { onSave } from "./store.js";
  * Supabase from the engine's side, over plain REST (no SDK):
  *  - verifies the dashboard's sign-in token and only lets the owner (OWNER_EMAIL) through;
  *  - backs the engine's data files up to `engine_files` and restores them on a fresh host.
- * The secret key goes on the `apikey` header only: new sb_secret_ keys are not JWTs and are rejected as a Bearer.
+ * New sb_secret_ keys go on the `apikey` header only (they are not JWTs and are rejected as a Bearer); legacy
+ * service_role keys (eyJ…) also go as a Bearer, which the Auth admin API requires.
  */
 
 class CloudError extends Error {}
 
+/** Legacy keys (eyJ…) are JWTs and must also go as a Bearer; new sb_secret_ keys must not. */
+const legacyKey = () => env.supabaseSecretKey.startsWith("eyJ");
+
+/** The `role` inside a legacy JWT key, so the anon key can be told apart from service_role before any request. */
+export function legacyKeyRole(key = env.supabaseSecretKey): string | null {
+  if (!key.startsWith("eyJ")) return null;
+  try {
+    return (JSON.parse(Buffer.from(key.split(".")[1] ?? "", "base64url").toString("utf8")) as { role?: string }).role ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function rest<T>(p: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
   const res = await fetch(`${env.supabaseUrl}${p}`, {
     method: init.method ?? "GET",
-    headers: { apikey: env.supabaseSecretKey, "content-type": "application/json", ...init.headers },
+    headers: {
+      apikey: env.supabaseSecretKey,
+      ...(legacyKey() ? { authorization: `Bearer ${env.supabaseSecretKey}` } : {}),
+      "content-type": "application/json",
+      ...init.headers,
+    },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
     signal: AbortSignal.timeout(15_000),
   });
@@ -152,6 +171,13 @@ function explain(e: unknown): Error {
 }
 
 export async function initCloud() {
+  const role = legacyKeyRole();
+  if (role && role !== "service_role") {
+    throw new Error(
+      `SUPABASE_SECRET_KEY is the "${role}" key, which is public and cannot run the engine. Use the service_role key ` +
+        "(Project Settings → API Keys → Legacy API keys → service_role, click Reveal) or a new sb_secret_… key.",
+    );
+  }
   let rows: Array<{ name: string; data: unknown }>;
   try {
     ownerId = await resolveOwner();
