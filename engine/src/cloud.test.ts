@@ -82,3 +82,10 @@ test("every save is backed up to engine_files", async () => {
   assert.equal((files.get("settings.json") as { marker: number }).marker, 42);
   assert.equal(files.has("unrelated.json"), false);
 });
+
+test("rejections say why", async () => {
+  const { checkOwnerToken } = await import("./cloud.js");
+  assert.match(String((await checkOwnerToken("a.stranger.jwt") as { reason: string }).reason), /stranger@example.com.*not the engine's OWNER_EMAIL/);
+  assert.match(String((await checkOwnerToken("a.forged2.jwt") as { reason: string }).reason), /invalid or expired/);
+  assert.match(String((await checkOwnerToken("") as { reason: string }).reason), /No sign-in token/);
+});

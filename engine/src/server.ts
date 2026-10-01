@@ -2,7 +2,7 @@ import http from "node:http";
 import crypto from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
 import { env, hasRpc, hasSupabase, isPublicBind } from "./config.js";
-import { cloudStatus, verifyOwnerToken } from "./cloud.js";
+import { checkOwnerToken, cloudStatus, type AuthResult } from "./cloud.js";
 import { bus, log, type LogLine } from "./bus.js";
 import { recentLaunches, solUsd } from "./feed.js";
 import { isUnlocked } from "./keystore.js";
@@ -102,14 +102,25 @@ class HttpError extends Error {
  * Who may drive the engine: the owner's Supabase session (dashboard), or ENGINE_API_TOKEN (scripts, curl).
  * With neither configured the engine only trusts its own machine, and index.ts refuses a public bind in that case.
  */
-async function authorized(token: string) {
-  if (env.apiToken) {
+async function authorize(token: string): Promise<AuthResult> {
+  if (env.apiToken && token) {
     const a = Buffer.from(token);
     const b = Buffer.from(env.apiToken);
-    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return { ok: true };
   }
-  if (hasSupabase()) return verifyOwnerToken(token);
-  return !env.apiToken && !isPublicBind();
+  if (hasSupabase()) return checkOwnerToken(token);
+  if (!env.apiToken && !isPublicBind()) return { ok: true };
+  return { ok: false, reason: token ? "Wrong ENGINE_API_TOKEN" : "No API token sent; set it under Settings" };
+}
+
+/** Logs each distinct rejection at most once a minute so the host's logs explain failures without flooding. */
+const lastWarned = new Map<string, number>();
+function warnOnce(msg: string) {
+  const now = Date.now();
+  if ((lastWarned.get(msg) ?? 0) > now - 60_000) return;
+  if (lastWarned.size > 100) lastWarned.clear();
+  lastWarned.set(msg, now);
+  log.warn("engine", msg);
 }
 const bearer = (req: http.IncomingMessage) => req.headers.authorization?.replace(/^Bearer /, "") ?? "";
 
@@ -117,7 +128,11 @@ const bearer = (req: http.IncomingMessage) => req.headers.authorization?.replace
 // any other site open in the same browser). Non-browser clients (curl) send no Origin and are allowed.
 function originAllowed(req: http.IncomingMessage) {
   const o = req.headers.origin;
-  return !o || env.dashboardOrigins.includes(o);
+  return !o || env.dashboardOrigins.includes(o.toLowerCase());
+}
+
+function originRejected(req: http.IncomingMessage) {
+  warnOnce(`Rejected a browser request from origin ${req.headers.origin}: not in DASHBOARD_ORIGINS (${env.dashboardOrigins.join(", ")})`);
 }
 
 function cors(req: http.IncomingMessage, res: http.ServerResponse) {
@@ -129,16 +144,29 @@ function cors(req: http.IncomingMessage, res: http.ServerResponse) {
 
 export function startServer() {
   const server = http.createServer(async (req, res) => {
-    cors(req, res);
-    if (!originAllowed(req)) return res.writeHead(403).end('{"error":"origin not allowed"}');
-    if (req.method === "OPTIONS") return res.writeHead(204).end();
     const url = new URL(req.url ?? "/", "http://localhost");
-    // Unauthenticated liveness probe for the hosting platform. Says nothing about the bot.
-    if (req.method === "GET" && url.pathname === "/health") return res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+    // Unauthenticated probe for the hosting platform and the dashboard's connection check. Readable from any origin
+    // so a misconfigured DASHBOARD_ORIGINS can be diagnosed from the browser; it reveals nothing about the bot.
+    if (req.method === "GET" && url.pathname === "/health") {
+      const origin = req.headers.origin;
+      return res
+        .writeHead(200, { "content-type": "application/json", "access-control-allow-origin": "*" })
+        .end(JSON.stringify({ ok: true, auth: status().auth, origin: origin ?? null, originAllowed: originAllowed(req), allowedOrigins: env.dashboardOrigins }));
+    }
+    cors(req, res);
+    if (!originAllowed(req)) {
+      originRejected(req);
+      return res.writeHead(403, { "content-type": "application/json" }).end(JSON.stringify({ error: `Origin ${req.headers.origin} is not in the engine's DASHBOARD_ORIGINS` }));
+    }
+    if (req.method === "OPTIONS") return res.writeHead(204).end();
     if (req.method !== "GET" && !String(req.headers["content-type"] ?? "").startsWith("application/json")) {
       return res.writeHead(415).end('{"error":"content-type must be application/json"}');
     }
-    if (!(await authorized(bearer(req)).catch(() => false))) return res.writeHead(401, { "content-type": "application/json" }).end('{"error":"unauthorized"}');
+    const auth = await authorize(bearer(req)).catch((e): AuthResult => ({ ok: false, reason: `Sign-in check failed: ${(e as Error).message}` }));
+    if (!auth.ok) {
+      warnOnce(`Rejected ${req.method} ${url.pathname}: ${auth.reason}`);
+      return res.writeHead(401, { "content-type": "application/json" }).end(JSON.stringify({ error: `Unauthorized: ${auth.reason}`, reason: auth.reason }));
+    }
 
     if (req.method === "GET" && url.pathname === "/api/export/trades.csv") {
       res.writeHead(200, {
@@ -176,14 +204,19 @@ export function startServer() {
   const wss = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    if (url.pathname !== "/ws" || !originAllowed(req)) return socket.destroy();
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws));
+    if (url.pathname !== "/ws") return socket.destroy();
+    if (!originAllowed(req)) {
+      originRejected(req);
+      return socket.end("HTTP/1.1 403 Forbidden\r\nconnection: close\r\n\r\n");
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   });
   // Browsers cannot set headers on a WebSocket, and a token in the URL ends up in proxy logs, so the first message
   // must be {"type":"auth","token":"..."}. Nothing is sent to a socket until it has authenticated.
   const clients = new Set<WebSocket>();
-  wss.on("connection", (ws) => {
-    const deadline = setTimeout(() => ws.close(4401, "auth timeout"), 5_000);
+  wss.on("connection", (ws, req: http.IncomingMessage) => {
+    const origin = req?.headers.origin;
+    const deadline = setTimeout(() => ws.close(4401, "No sign-in message within 5s"), 5_000);
     ws.once("message", async (raw) => {
       clearTimeout(deadline);
       let token = "";
@@ -193,8 +226,14 @@ export function startServer() {
       } catch {
         /* not JSON: falls through as unauthenticated */
       }
-      if (!(await authorized(token).catch(() => false))) return ws.close(4401, "unauthorized");
+      const auth = await authorize(token).catch((e): AuthResult => ({ ok: false, reason: `Sign-in check failed: ${(e as Error).message}` }));
+      if (!auth.ok) {
+        warnOnce(`Rejected live connection: ${auth.reason}`);
+        // Close reasons are capped at 123 bytes; the dashboard asks /api/status for the full reason.
+        return ws.close(4401, Buffer.from(auth.reason).subarray(0, 120).toString());
+      }
       clients.add(ws);
+      log.debug("engine", `Dashboard connected from ${origin ?? "no origin"}`);
       ws.send(JSON.stringify({ type: "hello", logs: bus.history.slice(-200), status: status() }));
     });
     ws.on("close", () => {
@@ -221,5 +260,6 @@ export function startServer() {
 
   server.listen(env.apiPort, env.apiHost, () => {
     log.info("engine", `API listening on http://${env.apiHost}:${env.apiPort} (sign-in: ${status().auth})`);
+    log.info("engine", `Browser origins allowed (DASHBOARD_ORIGINS): ${env.dashboardOrigins.join(", ") || "none"}`);
   });
 }

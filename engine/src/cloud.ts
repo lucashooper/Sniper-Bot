@@ -42,30 +42,53 @@ async function resolveOwner(): Promise<string> {
 
 // ---- Sign-in verification ---------------------------------------------------------------------------------------
 
-const verified = new Map<string, { ok: boolean; until: number }>();
+export type AuthResult = { ok: true } | { ok: false; reason: string };
+const verified = new Map<string, { result: AuthResult; until: number }>();
 let verifyBudget = { windowStart: 0, used: 0 };
 
-/** True when `token` is a live Supabase session for the owner. Results are cached for 60s per token. */
-export async function verifyOwnerToken(token: string): Promise<boolean> {
-  if (!hasSupabase() || !token || token.split(".").length !== 3) return false;
+/**
+ * Checks that `token` is a live Supabase session for the owner, and says why not when it isn't. The reasons are
+ * shown to whoever holds the token (the dashboard), so they name what is wrong without echoing OWNER_EMAIL.
+ * Results are cached for 60s per token.
+ */
+export async function checkOwnerToken(token: string): Promise<AuthResult> {
+  if (!hasSupabase()) return { ok: false, reason: "Supabase sign-in is not configured on the engine" };
+  if (!token) return { ok: false, reason: "No sign-in token was sent. Sign out and back in." };
+  if (token.split(".").length !== 3) return { ok: false, reason: "The token sent is not a Supabase session token" };
   const k = crypto.createHash("sha256").update(token).digest("base64");
   const hit = verified.get(k);
-  if (hit && hit.until > Date.now()) return hit.ok;
+  if (hit && hit.until > Date.now()) return hit.result;
   // Cap lookups so junk tokens cannot turn the engine into a Supabase request amplifier.
   const now = Date.now();
   if (now - verifyBudget.windowStart > 60_000) verifyBudget = { windowStart: now, used: 0 };
-  if (++verifyBudget.used > 60) return false;
-  let ok = false;
+  if (++verifyBudget.used > 60) return { ok: false, reason: "Too many sign-in checks this minute; retrying shortly" };
+  let result: AuthResult;
   try {
     const u = await rest<{ id: string; email?: string }>("/auth/v1/user", { headers: { authorization: `Bearer ${token}` } });
-    ok = u.email?.toLowerCase() === env.ownerEmail && (!ownerId || u.id === ownerId);
+    if (u.email?.toLowerCase() !== env.ownerEmail) {
+      result = { ok: false, reason: `Signed in as ${u.email ?? "an account with no email"}, which is not the engine's OWNER_EMAIL` };
+    } else if (ownerId && u.id !== ownerId) {
+      result = { ok: false, reason: "This account's id differs from the owner the engine resolved at start; restart the engine" };
+    } else {
+      result = { ok: true };
+    }
   } catch (e) {
-    if (!(e instanceof CloudError)) throw e; // network trouble: do not cache a negative answer
+    const msg = (e as Error).message;
+    if (!(e instanceof CloudError)) {
+      // The engine could not reach Supabase at all: say so, and do not cache it.
+      return { ok: false, reason: `The engine cannot reach Supabase (${msg}). Check SUPABASE_URL on the engine host.` };
+    }
+    result = /\b401\b|\b403\b/.test(msg) && !/apikey|api key|Invalid API key/i.test(msg)
+      ? { ok: false, reason: "Supabase says this session is invalid or expired. Sign out and back in." }
+      : { ok: false, reason: `Supabase rejected the check: ${msg}. Check SUPABASE_URL and SUPABASE_SECRET_KEY on the engine host.` };
   }
   if (verified.size > 200) verified.clear();
-  verified.set(k, { ok, until: now + 60_000 });
-  return ok;
+  verified.set(k, { result, until: now + 60_000 });
+  return result;
 }
+
+/** True when `token` is a live Supabase session for the owner. */
+export const verifyOwnerToken = async (token: string) => (await checkOwnerToken(token)).ok;
 
 // ---- State backup -------------------------------------------------------------------------------------------------
 
