@@ -2,7 +2,7 @@
 
 import { Download, RotateCcw } from "lucide-react";
 import { useEffect, useState } from "react";
-import { api, exportUrl, useEngine } from "@/lib/engine";
+import { api, downloadTradesCsv, useEngine } from "@/lib/engine";
 import { price, short, signed, solscan, time } from "@/lib/format";
 import type { Metrics, Trade } from "@/lib/types";
 import { PnlChart } from "@/components/pnl-chart";
@@ -42,7 +42,7 @@ export default function PnlPage() {
               </button>
             ))}
           </div>
-          <a href={exportUrl()}><Button><Download size={15} /> Download PnL CSV</Button></a>
+          <Button onClick={() => downloadTradesCsv().catch((e) => alert(e.message))}><Download size={15} /> Download PnL CSV</Button>
           <Button variant="ghost" onClick={() => confirm("Delete all simulated trades and positions?") && api("/api/sim/reset", { method: "POST", body: {} })}>
             <RotateCcw size={15} /> Reset sim
           </Button>

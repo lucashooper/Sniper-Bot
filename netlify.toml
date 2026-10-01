@@ -1,0 +1,18 @@
+# Netlify hosts only the dashboard, as a static site. The engine runs elsewhere (see DEPLOY.md).
+# Netlify site settings: Base directory = (empty, repo root). Everything else comes from this file.
+[build]
+  command = "npm run build --workspace dashboard"
+  publish = "dashboard/out"
+
+[build.environment]
+  NODE_VERSION = "22"
+  # Static export: no Next.js server functions needed.
+  NETLIFY_NEXT_PLUGIN_SKIP = "true"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"

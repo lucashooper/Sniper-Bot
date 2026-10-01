@@ -1,6 +1,7 @@
 "use client";
 
-import { ArrowDownToLine, Crown, Plus, RefreshCw, Send, Sparkles, Trash2, Wallet as WalletIcon } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, Crown, Download, Plus, RefreshCw, Send, Sparkles, Trash2, Wallet as WalletIcon } from "lucide-react";
+import { DepositDrawer } from "@/components/deposit";
 import { useState } from "react";
 import { api, useEngine } from "@/lib/engine";
 import { short } from "@/lib/format";
@@ -13,6 +14,8 @@ export default function WalletsPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [fundTarget, setFundTarget] = useState<Wallet | null>(null);
   const [reclaimOpen, setReclaimOpen] = useState(false);
+  const [depositOpen, setDepositOpen] = useState(false);
+  const [withdrawFrom, setWithdrawFrom] = useState<Wallet | null>(null);
   const [busy, setBusy] = useState(false);
 
   const wallets = state?.wallets ?? [];
@@ -54,8 +57,11 @@ export default function WalletsPage() {
           <Button onClick={() => run(() => api("/api/wallets/generate", { method: "POST", body: { name: "" } }), "Wallet generated")} disabled={busy || !!locked}>
             <Sparkles size={15} /> Generate
           </Button>
-          <Button variant="primary" onClick={() => setImportOpen(true)} disabled={!!locked}>
+          <Button onClick={() => setImportOpen(true)} disabled={!!locked}>
             <Plus size={15} /> Import wallet
+          </Button>
+          <Button variant="success" onClick={() => setDepositOpen(true)}>
+            <Download size={15} /> Deposit
           </Button>
         </div>
       </div>
@@ -137,6 +143,9 @@ export default function WalletsPage() {
                               </Button>
                             </>
                           )}
+                          <Button size="sm" variant="ghost" title="Withdraw to another address" onClick={() => setWithdrawFrom(w)} disabled={!state?.status.rpcConfigured}>
+                            <ArrowUpFromLine size={14} />
+                          </Button>
                           <Button
                             size="sm"
                             variant="ghost"
@@ -157,6 +166,8 @@ export default function WalletsPage() {
       </Card>
 
       <ImportModal open={importOpen} onClose={() => setImportOpen(false)} onDone={(ok) => ok && setImportOpen(false)} run={run} />
+      <DepositDrawer open={depositOpen} onClose={() => setDepositOpen(false)} />
+      <WithdrawModal wallet={withdrawFrom} sim={!!sim} balance={withdrawFrom ? balances[withdrawFrom.id]?.sol : undefined} onClose={() => setWithdrawFrom(null)} run={run} />
       <FundModal wallet={fundTarget} sim={!!sim} onClose={() => setFundTarget(null)} run={run} />
       <Modal
         open={reclaimOpen}
@@ -247,6 +258,52 @@ function FundModal({ wallet, sim, onClose, run }: { wallet: Wallet | null; sim: 
     >
       <Field label="Amount from master"><Input type="number" step="0.01" min={0} value={amount} onChange={(e) => setAmount(Number(e.target.value))} suffix="SOL" /></Field>
       {sim && <p className="text-sm text-violet-300">Simulation mode is on: the transfer is simulated, not sent.</p>}
+    </Modal>
+  );
+}
+
+function WithdrawModal({ wallet, sim, balance, onClose, run }: { wallet: Wallet | null; sim: boolean; balance?: number; onClose: () => void; run: (fn: () => Promise<unknown>, ok: string) => Promise<boolean> }) {
+  const [to, setTo] = useState("");
+  const [amount, setAmount] = useState("");
+  const [typed, setTyped] = useState("");
+  const max = amount.trim().toLowerCase() === "max";
+  const valid = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(to.trim()) && (max || Number(amount) > 0);
+  const close = () => (setTo(""), setAmount(""), setTyped(""), onClose());
+  return (
+    <Modal
+      open={!!wallet}
+      onClose={close}
+      title={`Withdraw from ${wallet?.name ?? ""}`}
+      footer={
+        <>
+          <Button variant="ghost" onClick={close}>Cancel</Button>
+          <Button
+            variant={sim ? "primary" : "danger"}
+            disabled={!valid || (!sim && typed !== "SEND")}
+            onClick={async () => (await run(() => api(`/api/wallets/${wallet!.id}/withdraw`, { method: "POST", body: { to: to.trim(), sol: max ? "max" : Number(amount) } }), sim ? "Dry run OK, nothing sent" : "Withdrawal confirmed")) && close()}
+          >
+            {sim ? "Dry run withdrawal" : `Send ${max ? "everything" : `${amount} SOL`}`}
+          </Button>
+        </>
+      }
+    >
+      <Field label="To address" hint="Your Phantom, Axiom or exchange deposit address. Double-check it: transfers cannot be reversed.">
+        <Input value={to} onChange={(e) => setTo(e.target.value)} className="font-mono text-xs" spellCheck={false} autoComplete="off" />
+      </Field>
+      <Field label="Amount" hint={`Balance ${balance?.toFixed(4) ?? "?"} SOL. Type max to send everything except the network fee.`}>
+        <div className="flex gap-2">
+          <Input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.5" suffix="SOL" wrapperClassName="flex-1" />
+          <Button onClick={() => setAmount("max")}>Max</Button>
+        </div>
+      </Field>
+      {sim ? (
+        <p className="text-sm text-violet-300">Simulation mode is on: the transfer is simulated against the chain, not sent.</p>
+      ) : (
+        <label className="block text-xs text-neutral-400">
+          Type <span className="font-mono text-rose-300">SEND</span> to confirm a real transfer
+          <Input value={typed} onChange={(e) => setTyped(e.target.value)} className="mt-1.5 font-mono" />
+        </label>
+      )}
     </Modal>
   );
 }

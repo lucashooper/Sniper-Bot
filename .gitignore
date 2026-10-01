@@ -4,6 +4,7 @@ node_modules
 engine/data/
 engine/dist/
 dashboard/.next/
+dashboard/out/
 dashboard/next-env.d.ts
 *.log
 .DS_Store
