@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Crown, ExternalLink, Flame, Search, ShieldAlert, Users, Zap } from "lucide-react";
 import { api, useEngine } from "@/lib/engine";
+import { takePrefetched } from "@/lib/token-cache";
 import { accountUrl, coinPage, compact, pct, short, solscan, time } from "@/lib/format";
 import type { Launch, Position, SellAllResult, TapeTrade, TokenDetail, Trade } from "@/lib/types";
 import { Avatar, CopyCa, CurveBar, Socials, age, defaultWalletId, money, useNow } from "@/components/token-feed";
@@ -60,7 +61,7 @@ function useTokenDetail(mint: string) {
     if (inflight.current) return void (again.current = true);
     inflight.current = true;
     try {
-      const d = await api<TokenDetail>(`/api/token/${encodeURIComponent(mint)}${last.current ? `?after=${last.current}` : ""}`);
+      const d = await ((!last.current && takePrefetched(mint)) || api<TokenDetail>(`/api/token/${encodeURIComponent(mint)}${last.current ? `?after=${last.current}` : ""}`));
       setError(null);
       if (!d.tracked) {
         last.current = 0;
@@ -123,8 +124,10 @@ function useTokenDetail(mint: string) {
 
   // The newest numbers for the header: the feed's copy (pushed ~10x a second) beats the last full fetch.
   const feedLaunch = state?.launches.find((l) => l.mint === mint);
-  const merged = useMemo(() => {
-    if (!detail?.tracked) return detail;
+  const merged = useMemo((): TokenDetail | null => {
+    // Before the engine answers, show the feed's copy of the coin so the page paints at once.
+    if (!detail) return feedLaunch ? { tracked: true, launch: feedLaunch, trades: [], firstSeq: 0, lastSeq: 0, holders: [], holderCount: 0, top10Pct: 0, solUsd: state?.solUsd ?? null } : null;
+    if (!detail.tracked) return detail;
     // Trade counts only grow, so the copy with the most trades is the newest.
     const n = (l: Launch) => l.buys + l.sells;
     const fresh = [feedLaunch, pushedLaunch].reduce<Launch>((best, l) => (l && n(l) > n(best) ? l : best), detail.launch);
