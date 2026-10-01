@@ -15,6 +15,8 @@ export type MarketEvent =
       ts: number;
       signature?: string;
       simulated: boolean;
+      /** Tokens (UI units) left to sell on the curve at create; bonding-curve progress is measured against it. */
+      curveTokens?: number;
     }
   | {
       type: "trade";
@@ -24,6 +26,11 @@ export type MarketEvent =
       prevPriceSol?: number;
       isBuy: boolean;
       solAmount: number;
+      /** Tokens (UI units) traded, when the event carries it. */
+      tokenAmount?: number;
+      /** Bonding curve only: real SOL deposited and real tokens left after the trade. */
+      realSolReserves?: number;
+      realTokenReserves?: number;
       trader: string;
       byCreator: boolean;
       venue: Venue;

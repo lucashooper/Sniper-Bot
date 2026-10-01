@@ -129,3 +129,99 @@ test("stream flags PumpSwap liquidity withdrawals and prices AMM trades for held
   assert.ok(Math.abs(trade.priceSol - 80 / 200_000_000) < 1e-15);
   assert.ok(events.some((e) => e.type === "liquidity_removed" && e.mint === mint.toBase58()));
 });
+
+test("feed tracks curve progress, dev holdings and liquidity from trades", async () => {
+  const { addLaunch, applyTrade, getLaunch, markMigrated } = await import("./feed.js");
+  const mint = Keypair.generate().publicKey.toBase58();
+  addLaunch({ mint, name: "Feed", symbol: "FEED", uri: "", creator: "dev", priceSol: 30 / 1_073_000_000, marketCapSol: 28, ts: Date.now(), simulated: false, curveTokens: 793_100_000 });
+  // Dev buys 50M tokens (5% of supply), then a trader buys and the curve is ~25% sold.
+  applyTrade({ mint, priceSol: 3.2e-8, isBuy: true, solAmount: 1.5, tokenAmount: 50_000_000, trader: "dev", byCreator: true, realTokenReserves: 743_100_000, realSolReserves: 1.5 });
+  applyTrade({ mint, priceSol: 5e-8, isBuy: true, solAmount: 10, tokenAmount: 150_000_000, trader: "t1", byCreator: false, realTokenReserves: 594_825_000, realSolReserves: 11.5 });
+  let l = getLaunch(mint)!;
+  assert.ok(Math.abs(l.devHoldPct - 5) < 1e-9);
+  assert.ok(Math.abs(l.curvePct - 25) < 1e-6);
+  assert.equal(l.liquiditySol, 11.5);
+  assert.equal(l.buys, 2);
+  assert.equal(l.traders, 2);
+  assert.ok(Math.abs(l.marketCapSol - 50) < 1e-9);
+  applyTrade({ mint, priceSol: 4e-8, isBuy: false, solAmount: 1, tokenAmount: 20_000_000, trader: "dev", byCreator: true });
+  l = getLaunch(mint)!;
+  assert.equal(l.devSold, true);
+  assert.ok(Math.abs(l.devHoldPct - 3) < 1e-9);
+  markMigrated(mint);
+  assert.equal(getLaunch(mint)!.curvePct, 100);
+});
+
+test("metadata parsing keeps only http(s) links and normalises socials", async () => {
+  const { parseMeta, hasSocials } = await import("./feed.js");
+  const m = parseMeta({ image: "ipfs://QmImage", twitter: "@coin", telegram: "t.me/coin", website: "javascript:alert(1)" });
+  assert.equal(m.image, "https://ipfs.io/ipfs/QmImage");
+  assert.equal(m.twitter, "https://x.com/coin");
+  assert.equal(m.telegram, "https://t.me/coin");
+  assert.equal(m.website, undefined);
+  assert.equal(hasSocials(m), true);
+  assert.equal(hasSocials(parseMeta({ image: "https://x/y.png" })), false);
+});
+
+test("auto-snipe filters: final vs. waiting verdicts", async () => {
+  const { evaluateFilters } = await import("./engine.js");
+  const { defaultSettings } = await import("./settings.js");
+  const f = { ...defaultSettings.filters };
+  const base: any = {
+    mint: "m", name: "Cosmic Cat", symbol: "CC", ts: Date.now(), marketCapSol: 40, liquiditySol: 5, curvePct: 10,
+    devHoldPct: 4, devSold: false, migrated: false, meta: { twitter: "https://x.com/cc" }, metaStatus: "ok",
+  };
+  assert.deepEqual(evaluateFilters(base, f, []), { pass: true });
+  assert.equal((evaluateFilters(base, f, ["dog"]) as any).final, true);
+  assert.equal((evaluateFilters({ ...base, devHoldPct: 15 }, f, []) as any).final, false);
+  assert.equal((evaluateFilters({ ...base, devSold: true }, f, []) as any).final, true);
+  const waitCurve = evaluateFilters(base, { ...f, curveTriggerPct: 30 }, []) as any;
+  assert.equal(waitCurve.pass, false);
+  assert.equal(waitCurve.final, false);
+  assert.equal(evaluateFilters({ ...base, curvePct: 31 }, { ...f, curveTriggerPct: 30 }, []).pass, true);
+  assert.equal((evaluateFilters({ ...base, meta: { image: "https://i" } }, { ...f, requireSocials: true }, []) as any).final, true);
+  assert.equal((evaluateFilters({ ...base, metaStatus: "pending", meta: null }, { ...f, requireSocials: true }, []) as any).final, false);
+  assert.equal((evaluateFilters({ ...base, ts: Date.now() - 400_000 }, f, []) as any).final, true);
+  assert.equal(evaluateFilters({ ...base, marketCapSol: 500 }, { ...f, maxMarketCapSol: 300 }, []).pass, false);
+  assert.equal(evaluateFilters(base, { ...f, minLiquiditySol: 10 }, []).pass, false);
+});
+
+test("stream publishes curve trades for coins in the feed with reserves and token amounts", async () => {
+  const { market } = await import("./events.js");
+  const { onPumpLogs } = await import("./stream.js");
+  const { addLaunch } = await import("./feed.js");
+  const coder = new BorshCoder(pumpIdl as never);
+  const idl = pumpIdl as any;
+  const mint = Keypair.generate().publicKey;
+  addLaunch({ mint: mint.toBase58(), name: "T", symbol: "T", uri: "", creator: "c", priceSol: 1, marketCapSol: 1, ts: Date.now(), simulated: false });
+  const zero = Object.fromEntries(
+    idl.types.find((t: any) => t.name === "TradeEvent").type.fields.map((f: any) => [
+      f.name,
+      f.type === "pubkey" ? PublicKey.default : f.type === "bool" ? false : f.type === "string" ? "" : typeof f.type === "object" && "vec" in f.type ? [] : new BN(0),
+    ]),
+  );
+  const user = Keypair.generate().publicKey;
+  const body = coder.types.encode("TradeEvent", {
+    ...zero,
+    mint,
+    user,
+    creator: user,
+    is_buy: true,
+    sol_amount: new BN(2_000_000_000),
+    token_amount: new BN("60000000000000"),
+    virtual_sol_reserves: new BN("32000000000"),
+    virtual_token_reserves: new BN("1013000000000000"),
+    real_sol_reserves: new BN("2000000000"),
+    real_token_reserves: new BN("733100000000000"),
+  });
+  const disc = Buffer.from(idl.events.find((e: any) => e.name === "TradeEvent").discriminator);
+  const events: any[] = [];
+  market.subscribe((e) => events.push(e));
+  onPumpLogs({ err: null, signature: "s", logs: [`Program data: ${Buffer.concat([disc, body]).toString("base64")}`] });
+  const t = events.find((e) => e.type === "trade" && e.mint === mint.toBase58());
+  assert.ok(t, "trade for a feed coin should be published");
+  assert.equal(t.byCreator, true);
+  assert.equal(t.tokenAmount, 60_000_000);
+  assert.equal(t.realSolReserves, 2);
+  assert.equal(t.realTokenReserves, 733_100_000);
+});

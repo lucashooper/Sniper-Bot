@@ -37,6 +37,8 @@ The dashboard deploys to Netlify as a static site and the engine runs on an alwa
 | Piece | Implementation |
 |---|---|
 | Launch detection | `logsSubscribe` on the Pump.fun and PumpSwap programs; Anchor events are decoded from `Program data:` logs (`engine/src/stream.ts`). Works on any RPC. |
+| Token feed | Every new launch is tracked from its own trade events: market cap, bonding-curve %, SOL in the curve, volume, buys/sells, unique traders, and the dev wallet's share of supply. Image and socials come from the coin's metadata JSON (IPFS), fetched by the engine (`engine/src/feed.ts`). Shown in USD when the engine can fetch the SOL price, otherwise in SOL. |
+| Auto-snipe filters | Keywords, min/max market cap, min liquidity, max dev holding, skip if the dev sold, require socials or an image, and a bonding-curve trigger that waits until the curve is X% complete instead of buying at launch (`evaluateFilters` in `engine/src/engine.ts`). |
 | Buy / sell | Official `@pump-fun/pump-sdk` (bonding curve) and `@pump-fun/pump-swap-sdk` (graduated coins). The engine picks the venue per coin (`engine/src/pump.ts`). |
 | Landing | One transaction `[CU limit, CU price, swap, tip]`, simulated first, then sent as a Jito bundle via the Block Engine JSON-RPC API. A bundle is all-or-nothing and never hits the public mempool, so a failed buy costs nothing and cannot be sandwiched (`engine/src/jito.ts`, `engine/src/trader.ts`). |
 | Tips and fees | Tip = your setting, raised to the live 75th-percentile landed tip when dynamic tips are on, capped at your max. Priority fee is fetched per trade unless you pin it. |

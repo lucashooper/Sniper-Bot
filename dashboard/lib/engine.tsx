@@ -158,6 +158,14 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
         } else if (msg.type === "log") setLogs((l) => (l.length > 800 ? [...l.slice(-600), msg.line] : [...l, msg.line]));
         else if (msg.type === "changed") {
           if (msg.topics.includes("trades")) setTradesVersion((v) => v + 1);
+          // The token feed ticks constantly; fetch just the launches for it instead of the whole state.
+          if (msg.topics.length === 1 && msg.topics[0] === "launches") {
+            api<Pick<EngineState, "launches" | "solUsd">>("/api/launches").then(
+              (r) => setState((s) => (s ? { ...s, ...r } : s)),
+              () => {},
+            );
+            return;
+          }
           refreshTimer.current ??= setTimeout(() => {
             refreshTimer.current = null;
             void refresh();

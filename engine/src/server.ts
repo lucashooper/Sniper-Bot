@@ -4,7 +4,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { env, hasRpc, hasSupabase, isPublicBind } from "./config.js";
 import { checkOwnerToken, cloudStatus, type AuthResult } from "./cloud.js";
 import { bus, log, type LogLine } from "./bus.js";
-import { recentLaunches } from "./engine.js";
+import { recentLaunches, solUsd } from "./feed.js";
 import { isUnlocked } from "./keystore.js";
 import {
   closedPositions,
@@ -51,8 +51,10 @@ route("GET", "/api/state", () => ({
   balances: getBalances(),
   positions: openPositions(),
   metrics: metrics(),
-  launches: recentLaunches().slice(0, 50),
+  launches: recentLaunches().slice(0, 60),
+  solUsd: solUsd(),
 }));
+route("GET", "/api/launches", () => ({ launches: recentLaunches().slice(0, 60), solUsd: solUsd() }));
 route("GET", "/api/settings", () => getSettings());
 route("PUT", "/api/settings", (b: Partial<Settings>) => {
   if (b.simulation === false && !env.allowLive) {
