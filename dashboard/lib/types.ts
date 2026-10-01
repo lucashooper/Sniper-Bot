@@ -31,6 +31,16 @@ export interface SnipeFilters {
   requireImage: boolean;
   curveTriggerPct: number;
   maxWatchSec: number;
+  /** Missing on engines older than dev labels. */
+  onlyFollowedDevs?: boolean;
+}
+
+/** A labelled wallet (engine settings.devs). */
+export interface DevTag {
+  name: string;
+  emoji: string;
+  mode: "none" | "follow" | "hide";
+  updatedAt: number;
 }
 
 export interface Settings {
@@ -40,6 +50,8 @@ export interface Settings {
   autoSnipeMaxPerHour: number;
   autoSnipeKeywords: string[];
   filters: SnipeFilters;
+  /** Labelled wallets by address. Missing on engines older than dev labels. */
+  devs?: Record<string, DevTag>;
   quickBuyPresets: number[];
   slippagePct: number;
   priorityFeeMicroLamports: number;
@@ -153,9 +165,12 @@ export interface Launch {
   buys: number;
   sells: number;
   traders: number;
+  /** Missing on engines older than the Pulse view. */
+  holders?: number;
   devHoldPct: number;
   devSold: boolean;
   migrated: boolean;
+  migratedAt?: number;
   spark: number[];
   meta: TokenMeta | null;
   metaStatus: "pending" | "ok" | "none";

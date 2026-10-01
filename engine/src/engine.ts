@@ -11,7 +11,7 @@ import { listWallets } from "./wallets.js";
 import { short } from "./solana.js";
 import { trackPool, watchSupply } from "./stream.js";
 import { addLaunch, applyTrade, getLaunch, hasSocials, loadMeta, markLaunch, markMigrated, onMetaSettled, setRetainer, type Launch } from "./feed.js";
-import type { SnipeFilters } from "./settings.js";
+import type { DevTag, SnipeFilters } from "./settings.js";
 
 const autoSnipeTimes: number[] = [];
 
@@ -28,8 +28,12 @@ export type FilterVerdict = { pass: true } | { pass: false; reason: string; fina
  * graduated, the watch window ran out), so the launch is dropped. Anything else may still clear on a later trade
  * (market cap rising into range, the curve reaching the trigger), so the launch stays watched.
  */
-export function evaluateFilters(l: Launch, f: SnipeFilters, keywords: string[], now = Date.now()): FilterVerdict {
+export function evaluateFilters(l: Launch, f: SnipeFilters, keywords: string[], now = Date.now(), devs: Record<string, DevTag> = {}): FilterVerdict {
   const fail = (reason: string, final = false): FilterVerdict => ({ pass: false, reason, final });
+  const dev = l.creator ? devs[l.creator] : undefined;
+  const devName = () => (dev && [dev.emoji, dev.name].filter(Boolean).join(" ")) || short(l.creator ?? "unknown");
+  if (dev?.mode === "hide") return fail(`dev ${devName()} is hidden in your dev list`, true);
+  if (f.onlyFollowedDevs && dev?.mode !== "follow") return fail(`dev ${devName()} is not a followed dev`, true);
   const hay = `${l.name} ${l.symbol}`.toLowerCase();
   if (keywords.length && !keywords.some((k) => hay.includes(k.toLowerCase()))) return fail("no keyword match", true);
   if (l.migrated) return fail("already graduated to PumpSwap", true);
@@ -55,7 +59,7 @@ function considerAutoSnipe(mint: string) {
   if (!l) return void watching.delete(mint);
   if (!watching.has(mint)) return;
   if (!s.autoSnipe) return void watching.delete(mint);
-  const v = evaluateFilters(l, s.filters, s.autoSnipeKeywords);
+  const v = evaluateFilters(l, s.filters, s.autoSnipeKeywords, Date.now(), s.devs);
   if (!v.pass) {
     if (v.final) {
       watching.delete(mint);

@@ -4,6 +4,7 @@ import { EngineProvider } from "@/lib/engine";
 import { Shell } from "@/components/shell";
 import { AuthGate } from "@/components/auth-gate";
 import { Motion } from "@/components/motion";
+import { DevsProvider } from "@/components/devs";
 
 export const metadata: Metadata = {
   title: "Sniper Bot",
@@ -24,7 +25,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Motion>
           <AuthGate>
             <EngineProvider>
-              <Shell>{children}</Shell>
+              <DevsProvider>
+                <Shell>{children}</Shell>
+              </DevsProvider>
             </EngineProvider>
           </AuthGate>
         </Motion>

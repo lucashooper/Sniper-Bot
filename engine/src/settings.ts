@@ -27,6 +27,19 @@ export interface SnipeFilters {
   curveTriggerPct: number;
   /** Stop watching a launch for the trigger after this many seconds. */
   maxWatchSec: number;
+  /** Only auto-snipe coins created by devs marked "follow" in the dev list. Hidden devs are never auto-sniped. */
+  onlyFollowedDevs: boolean;
+}
+
+/**
+ * A wallet the owner labelled, like Axiom's wallet labels: shown wherever that wallet appears (feed, coin page,
+ * trades, holders). "follow" lets the feed and auto-snipe narrow to these devs; "hide" drops their coins from both.
+ */
+export interface DevTag {
+  name: string;
+  emoji: string;
+  mode: "none" | "follow" | "hide";
+  updatedAt: number;
 }
 
 export interface Settings {
@@ -39,6 +52,8 @@ export interface Settings {
   autoSnipeKeywords: string[];
   /** Conditions a new launch must meet before auto-snipe buys it. 0 disables a numeric limit. */
   filters: SnipeFilters;
+  /** Labelled wallets by address. Changed through /api/devs, never by a plain settings save. */
+  devs: Record<string, DevTag>;
   /** SOL amounts on the feed's one-click buy buttons. */
   quickBuyPresets: number[];
   slippagePct: number;
@@ -89,7 +104,9 @@ export const defaultSettings: Settings = {
     requireImage: false,
     curveTriggerPct: 0,
     maxWatchSec: 300,
+    onlyFollowedDevs: false,
   },
+  devs: {},
   quickBuyPresets: [0.1, 0.5, 1],
   slippagePct: 15,
   priorityFeeMicroLamports: 0,
@@ -119,13 +136,16 @@ export const defaultSettings: Settings = {
 };
 
 const saved = loadJson<Partial<Settings>>("settings.json", {});
-let current: Settings = { ...defaultSettings, ...saved, filters: { ...defaultSettings.filters, ...(saved.filters ?? {}) } };
+let current: Settings = { ...defaultSettings, ...saved, filters: { ...defaultSettings.filters, ...(saved.filters ?? {}) }, devs: saved.devs ?? {} };
 
 export function getSettings(): Settings {
   return current;
 }
 
 export function updateSettings(patch: Partial<Settings>): Settings {
+  // Dev labels have their own endpoint, so a stale settings form saved from another tab cannot wipe them.
+  const { devs: _ignored, ...rest } = patch;
+  patch = rest;
   current = {
     ...current,
     ...patch,
@@ -139,4 +159,46 @@ export function updateSettings(patch: Partial<Settings>): Settings {
   saveJson("settings.json", current);
   bus.changed("settings");
   return current;
+}
+
+/* ---------------------------------------------------------------- dev labels */
+
+const ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+/** Real Solana addresses, plus the simulation market's fake trader names so labels can be tried in paper mode. */
+export const isDevAddress = (a: string) => ADDRESS.test(a) || /^sim-trader-\d{1,4}$/.test(a);
+const MAX_DEVS = 2_000;
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/** One emoji (or character) as the eye sees it, so skin tones and joined emoji stay whole. */
+const firstSymbol = (s: string) => (graphemes.segment(s.trim())[Symbol.iterator]().next().value?.segment ?? "").slice(0, 16);
+
+export class DevTagError extends Error {}
+
+/** Adds or changes one labelled wallet. Name is trimmed to 32 characters, the emoji to one symbol. */
+export function setDevTag(address: string, patch: Partial<Pick<DevTag, "name" | "emoji" | "mode">>): DevTag {
+  const a = address.trim();
+  if (!isDevAddress(a)) throw new DevTagError(`"${a.slice(0, 60)}" is not a Solana wallet address (32 to 44 base58 characters)`);
+  const prev = current.devs[a];
+  if (!prev && Object.keys(current.devs).length >= MAX_DEVS) throw new DevTagError(`The dev list is full (${MAX_DEVS} wallets). Remove some first.`);
+  const mode = patch.mode ?? prev?.mode ?? "none";
+  if (!["none", "follow", "hide"].includes(mode)) throw new DevTagError(`Unknown mode "${String(mode)}": use none, follow or hide`);
+  const tag: DevTag = {
+    name: String(patch.name ?? prev?.name ?? "").trim().slice(0, 32),
+    emoji: firstSymbol(String(patch.emoji ?? prev?.emoji ?? "")),
+    mode,
+    updatedAt: Date.now(),
+  };
+  current = { ...current, devs: { ...current.devs, [a]: tag } };
+  saveJson("settings.json", current);
+  bus.changed("settings");
+  return tag;
+}
+
+export function removeDevTag(address: string): boolean {
+  if (!current.devs[address]) return false;
+  const { [address]: _gone, ...devs } = current.devs;
+  current = { ...current, devs };
+  saveJson("settings.json", current);
+  bus.changed("settings");
+  return true;
 }

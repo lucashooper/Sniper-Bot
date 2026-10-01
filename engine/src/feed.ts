@@ -36,10 +36,14 @@ export interface Launch {
   buys: number;
   sells: number;
   traders: number;
+  /** Wallets holding at least one token, from the buys and sells seen since launch (transfers not counted). */
+  holders: number;
   /** % of total supply the creator wallet holds, from its own buys and sells since launch. */
   devHoldPct: number;
   devSold: boolean;
   migrated: boolean;
+  /** When the engine saw the coin graduate to PumpSwap. */
+  migratedAt?: number;
   /** Market cap (SOL) after each of the last trades, oldest first, for the row sparkline. */
   spark: number[];
   meta: TokenMeta | null;
@@ -52,7 +56,21 @@ export interface Launch {
 /** Pump.fun curve constants: 1B supply (6 decimals), 793.1M of it sold on the curve before graduation. */
 export const TOTAL_SUPPLY = 1_000_000_000;
 export const CURVE_TOKENS = 793_100_000;
-const MAX_LAUNCHES = 150;
+/**
+ * Pulse columns, shared by the dashboard's three-column view, its list tabs and the feed's memory caps:
+ * New pairs under STRETCH_PCT curve, Final stretch from STRETCH_PCT until graduation, Graduated once on PumpSwap.
+ */
+export const STRETCH_PCT = 40;
+export type PulseBucket = "new" | "stretch" | "graduated";
+export const pulseBucket = (l: Pick<Launch, "migrated" | "curvePct">): PulseBucket =>
+  l.migrated ? "graduated" : l.curvePct >= STRETCH_PCT ? "stretch" : "new";
+/**
+ * Coins tracked per column. Coins are dropped oldest first within their own column, so a coin climbing the curve is
+ * not pushed out by the flood of new launches behind it (Pump.fun sees ~150 launches in a few minutes).
+ */
+const KEEP: Record<PulseBucket, number> = { new: 150, stretch: 60, graduated: 40 };
+/** Coins per column sent to the dashboard (it keeps the same caps when merging pushed updates). */
+export const FEED_KEEP: Record<PulseBucket, number> = { new: 50, stretch: 30, graduated: 30 };
 const SPARK_POINTS = 40;
 /** Trades kept per coin for its chart and trade list. */
 const MAX_TAPE = 3_000;
@@ -107,6 +125,24 @@ function forget(mint: string) {
 }
 
 export const recentLaunches = () => launches;
+
+/** Newest first within a column; graduated coins by when they graduated. */
+const bucketTime = (l: Launch) => (l.migrated ? (l.migratedAt ?? l.ts) : l.ts);
+
+/** The newest `caps[b]` coins of each column, newest first overall. */
+export function takePerBucket(list: Launch[], caps: Record<PulseBucket, number>): Launch[] {
+  const sorted = [...list].sort((a, b) => bucketTime(b) - bucketTime(a));
+  const count: Record<PulseBucket, number> = { new: 0, stretch: 0, graduated: 0 };
+  const keep = new Set<Launch>();
+  for (const l of sorted) {
+    const b = pulseBucket(l);
+    if (count[b]++ < caps[b]) keep.add(l);
+  }
+  return list.filter((l) => keep.has(l));
+}
+
+/** What the dashboard's feed shows: the newest coins of each Pulse column. */
+export const feedList = () => takePerBucket(launches, FEED_KEEP);
 export const getLaunch = (mint: string) => byMint.get(mint);
 export const isTrackedLaunch = (mint: string) => byMint.has(mint);
 
@@ -185,6 +221,7 @@ export function addLaunch(e: {
     buys: 0,
     sells: 0,
     traders: 0,
+    holders: 0,
     devHoldPct: 0,
     devSold: false,
     migrated: false,
@@ -199,15 +236,24 @@ export function addLaunch(e: {
   curveStart.set(l.mint, e.curveTokens && e.curveTokens > 0 ? e.curveTokens : CURVE_TOKENS);
   tapes.set(l.mint, []);
   holdings.set(l.mint, new Map());
-  const now = Date.now();
-  while (launches.length > MAX_LAUNCHES) {
-    const old = launches.pop()!;
-    if (retained(old.mint, now)) kept.add(old.mint);
-    else forget(old.mint);
-  }
-  for (const m of kept) if (!retained(m, now)) forget(m);
+  trim();
   notify(l.mint);
   return l;
+}
+
+/** Drops the oldest coins of any column over its cap; a coin still open on a page or held stays tracked. */
+function trim(now = Date.now()) {
+  if (launches.length > KEEP.new) {
+    const keep = new Set(takePerBucket(launches, KEEP));
+    for (let i = launches.length - 1; i >= 0; i--) {
+      const old = launches[i];
+      if (keep.has(old)) continue;
+      launches.splice(i, 1);
+      if (retained(old.mint, now)) kept.add(old.mint);
+      else forget(old.mint);
+    }
+  }
+  for (const m of kept) if (!retained(m, now)) forget(m);
 }
 
 export interface FeedTrade {
@@ -250,9 +296,12 @@ export function applyTrade(t: FeedTrade): Launch | null {
   tape.push({ seq, ts: Date.now(), priceSol: t.priceSol, isBuy: t.isBuy, solAmount: t.solAmount, tokenAmount: tokens, trader: t.trader, byCreator: t.byCreator, signature: t.signature });
   if (tape.length > MAX_TAPE) tape.splice(0, tape.length - MAX_TAPE);
   const hold = holdings.get(t.mint)!;
-  const net = Math.max(0, (hold.get(t.trader) ?? 0) + (t.isBuy ? tokens : -tokens));
+  const before = hold.get(t.trader) ?? 0;
+  const net = Math.max(0, before + (t.isBuy ? tokens : -tokens));
   if (net > 0) hold.set(t.trader, net);
   else hold.delete(t.trader);
+  // A holder is a wallet with at least one whole token, the same rule as the coin page's holder list.
+  l.holders += (net >= 1 ? 1 : 0) - (before >= 1 ? 1 : 0);
   if (t.byCreator) {
     const held = Math.max(0, (devTokens.get(t.mint) ?? 0) + (t.isBuy ? tokens : -tokens));
     devTokens.set(t.mint, held);
@@ -302,6 +351,7 @@ export function tokenDetail(mint: string, after = 0) {
 export function markMigrated(mint: string) {
   const l = byMint.get(mint);
   if (!l) return;
+  if (!l.migrated) l.migratedAt = Date.now();
   l.migrated = true;
   l.curvePct = 100;
   notify(mint);

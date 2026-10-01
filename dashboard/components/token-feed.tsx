@@ -7,6 +7,7 @@ import { api, useEngine } from "@/lib/engine";
 import { coinPage, short, tokenUrl } from "@/lib/format";
 import type { Launch } from "@/lib/types";
 import { Badge, Empty, cx, useToast } from "./ui";
+import { DevChip } from "./devs";
 
 /* ---------------------------------------------------------------- formatting */
 
@@ -328,6 +329,7 @@ const Row = memo(function Row({
             <div className="mt-1 flex items-center gap-2.5 text-[11px]">
               <Age ts={l.ts} className="font-medium text-emerald-400" />
               <Socials l={l} />
+              <DevChip address={l.creator} prefix="dev" />
               {l.sniped && <Badge tone="green">sniped</Badge>}
               {l.migrated && <Badge tone="amber">PumpSwap</Badge>}
               {l.simulated && <Badge>sim</Badge>}
@@ -375,8 +377,8 @@ const Row = memo(function Row({
             </div>
             <div className="flex items-center gap-3">
               <Stat2 label="Dev" value={`${l.devHoldPct.toFixed(1)}%`} tone={l.devHoldPct > 10 ? "bad" : l.devHoldPct > 5 ? "warn" : undefined} />
-              <span className="flex items-center gap-1 text-[11px] text-neutral-400" title="Traders">
-                <Users size={11} className="text-neutral-600" /> {l.traders}
+              <span className="flex items-center gap-1 text-[11px] text-neutral-400" title="Holders (wallets holding at least one token, from trades seen since launch)">
+                <Users size={11} className="text-neutral-600" /> {l.holders ?? l.traders}
               </span>
               {l.devSold ? (
                 <span className="flex items-center gap-1 text-[11px] text-rose-400">

@@ -5,8 +5,9 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { env, hasRpc, hasSupabase, isPublicBind } from "./config.js";
 import { checkOwnerToken, cloudStatus, type AuthResult } from "./cloud.js";
 import { bus, DetailedError, log, type LogLine } from "./bus.js";
-import { recentLaunches, solUsd, takeDirty, tapeBounds, tapeSince, tokenDetail, touchView, type Launch } from "./feed.js";
+import { feedList, solUsd, takeDirty, tapeBounds, tapeSince, tokenDetail, touchView, type Launch } from "./feed.js";
 import { isUnlocked } from "./keystore.js";
+import { short } from "./solana.js";
 import {
   closedPositions,
   metrics,
@@ -17,14 +18,11 @@ import {
   tradesCsv,
 } from "./portfolio.js";
 import { checkMint } from "./safety.js";
-import { getSettings, updateSettings, type Settings } from "./settings.js";
+import { DevTagError, getSettings, removeDevTag, setDevTag, updateSettings, type Settings } from "./settings.js";
 import { createGroup, generateIntoGroup, listGroups, removeGroup, updateGroup } from "./groups.js";
 import { executeBuy, executeSell, isLive, sellAll } from "./trader.js";
 import { fundGroup, fundWallet, getBalances, reclaimAll, refreshBalances, withdraw } from "./walletOps.js";
 import { generateWallet, importWallet, listWallets, removeWallet, updateWallet } from "./wallets.js";
-
-/** Coins the dashboard's feed shows; the engine tracks more (for auto-snipe and open coin pages). */
-const FEED_SIZE = 60;
 
 type Handler = (body: any, params: Record<string, string>, url: URL) => Promise<unknown> | unknown;
 const routes: Array<{ method: string; pattern: RegExp; keys: string[]; handler: Handler }> = [];
@@ -57,10 +55,10 @@ route("GET", "/api/state", () => ({
   balances: getBalances(),
   positions: openPositions(),
   metrics: metrics(),
-  launches: recentLaunches().slice(0, FEED_SIZE),
+  launches: feedList(),
   solUsd: solUsd(),
 }));
-route("GET", "/api/launches", () => ({ launches: recentLaunches().slice(0, FEED_SIZE), solUsd: solUsd() }));
+route("GET", "/api/launches", () => ({ launches: feedList(), solUsd: solUsd() }));
 route("GET", "/api/token/:mint", (_b, p, url) => {
   const d = tokenDetail(decodeURIComponent(p.mint), Number(url.searchParams.get("after") ?? 0) || 0);
   return d ? { tracked: true, ...d, solUsd: solUsd() } : { tracked: false, solUsd: solUsd() };
@@ -73,6 +71,25 @@ route("PUT", "/api/settings", (b: Partial<Settings>) => {
   const s = updateSettings(b);
   if (b.simulation !== undefined) log.warn("engine", s.simulation ? "Simulation mode ON: no real transactions" : "LIVE MODE: trades now spend real SOL");
   return s;
+});
+
+// Dev labels: one wallet at a time, so two open dashboards never overwrite each other's labels.
+route("PUT", "/api/devs/:address", (b, p) => {
+  const address = decodeURIComponent(p.address);
+  try {
+    const tag = setDevTag(address, { name: b.name, emoji: b.emoji, mode: b.mode });
+    log.info("engine", `Dev ${short(address)} labelled ${[tag.emoji, tag.name].filter(Boolean).join(" ") || "(no name)"}${tag.mode !== "none" ? ` (${tag.mode})` : ""}`);
+    return { address, ...tag };
+  } catch (e) {
+    if (e instanceof DevTagError) throw new HttpError(400, e.message);
+    throw e;
+  }
+});
+route("DELETE", "/api/devs/:address", (_b, p) => {
+  const address = decodeURIComponent(p.address);
+  if (!removeDevTag(address)) throw new HttpError(404, `No label saved for ${address}`);
+  log.info("engine", `Dev label removed from ${short(address)}`);
+  return { ok: true };
 });
 
 route("GET", "/api/wallets", () => ({ wallets: listWallets(), groups: listGroups(), balances: getBalances() }));
@@ -309,7 +326,7 @@ export function startServer() {
     // Older dashboards still re-fetch on this hint.
     bus.changed("launches");
     if (!clients.size) return;
-    const top = recentLaunches().slice(0, FEED_SIZE);
+    const top = feedList();
     const inFeed = new Set(top.map((l) => l.mint));
     const set = new Set(changed);
     const launches: Launch[] = top.filter((l) => set.has(l.mint));
