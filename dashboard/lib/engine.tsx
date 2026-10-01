@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { diagnose, type Check } from "./diagnose";
 import { accessToken, supabaseEnabled } from "./supabase";
 import type { EngineState, LogLine } from "./types";
 
@@ -81,6 +82,9 @@ interface Ctx {
   /** Bumps whenever the engine says trades changed, so pages holding trade lists can re-fetch. */
   tradesVersion: number;
   reconnect: () => void;
+  /** Hop-by-hop connection check, filled in while the engine is unreachable. */
+  diagnosis: Check[] | null;
+  runDiagnosis: () => Promise<void>;
 }
 
 const EngineCtx = createContext<Ctx | null>(null);
@@ -90,6 +94,16 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [diagnosis, setDiagnosis] = useState<Check[] | null>(null);
+  const lastDiag = useRef(0);
+  const runDiagnosis = useCallback(async () => {
+    lastDiag.current = Date.now();
+    const checks = await diagnose(readConn().url, supabaseEnabled ? undefined : readConn().token);
+    const bad = checks.find((c) => !c.ok);
+    // eslint-disable-next-line no-console
+    if (bad) console.warn(`[engine] ${bad.label}: ${bad.detail}`, checks);
+    setDiagnosis(checks);
+  }, []);
   const [tradesVersion, setTradesVersion] = useState(0);
   const [epoch, setEpoch] = useState(0);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -124,6 +138,8 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
       ws.onopen = () => ws?.send(JSON.stringify({ type: "auth", token }));
       ws.onclose = (ev) => {
         setConnected(false);
+        // Explain the failure, at most every 20s while it keeps failing.
+        if (!closed && Date.now() - lastDiag.current > 20_000) void runDiagnosis();
         if (ev.code === 4401) {
           authFailed = true;
           setError("unauthorized");
@@ -136,6 +152,7 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
         if (msg.type === "hello") {
           setConnected(true);
           setError(null);
+          setDiagnosis(null);
           setLogs(msg.logs);
           void refresh();
         } else if (msg.type === "log") setLogs((l) => (l.length > 800 ? [...l.slice(-600), msg.line] : [...l, msg.line]));
@@ -154,11 +171,11 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
       if (retry) clearTimeout(retry);
       ws?.close();
     };
-  }, [refresh, epoch]);
+  }, [refresh, epoch, runDiagnosis]);
 
   return (
     <EngineCtx.Provider
-      value={{ state, logs, connected, error, refresh, tradesVersion, reconnect: () => setEpoch((e) => e + 1) }}
+      value={{ state, logs, connected, error, refresh, tradesVersion, reconnect: () => setEpoch((e) => e + 1), diagnosis, runDiagnosis }}
     >
       {children}
     </EngineCtx.Provider>
