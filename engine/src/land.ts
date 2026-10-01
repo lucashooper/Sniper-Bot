@@ -2,20 +2,23 @@ import type { Connection, VersionedTransaction } from "@solana/web3.js";
 import { DetailedError, log } from "./bus.js";
 import * as jito from "./jito.js";
 import { signatureOf, type InflightStatus } from "./jito.js";
+import { sendViaSender } from "./sender.js";
 import { connection, short } from "./solana.js";
 
 /**
  * Lands one signed transaction and only reports failure once the chain proves it can no longer land.
  *
- * Jito alone was not enough: a bundle Jito accepts can still read "Invalid" (Jito's words: "bundle ID not in our
- * system") and never land, and the old code gave up after 30 s on Jito's word without asking the chain. Now:
- *  1. send it as a single-transaction Jito bundle (all-or-nothing, never public before it lands);
- *  2. if it has not landed after a few seconds, or Jito refused or lost it, re-broadcast the very same signed bytes
- *     through Jito's sendTransaction and the RPC. Same bytes, same signature: Solana runs a signature at most once,
- *     so this can never buy twice;
- *  3. watch the signature on chain; succeed when it confirms, fail with its on-chain error if it ran and failed,
- *     and call it "not landed" only when the blockhash has expired, so it can never land later.
+ * Two ways to send, picked by settings.sendMode:
+ *  - "fast" (default): the transaction goes at once to Helius Sender (which routes it to Jito and to staked validator
+ *    connections in parallel) and to the RPC, and is re-sent every 2 s until it lands. It can land with any leader.
+ *  - "protected": a private single-transaction Jito bundle, re-submitted every 2 s while Jito has not landed it.
+ *    Never public before it lands (no sandwiches), but only Jito leaders can include it and Jito may drop it.
+ * Every re-send is the very same signed bytes: one signature, which Solana executes at most once, so a re-send can
+ * never buy twice. Success is read from the chain, not from Jito or Helius; "not landed" is only reported once the
+ * blockhash has expired, so it can never land later.
  */
+
+export type SendMode = "fast" | "protected";
 
 export interface Step {
   /** Milliseconds since the send started. */
@@ -31,8 +34,7 @@ export interface LandResult {
   steps: Step[];
 }
 
-/** How long the bundle gets on its own (ms) before the same transaction is also re-broadcast. */
-const BUNDLE_HEAD_START_MS = 2_500;
+const RESEND_MS = 2_000;
 const POLL_MS = 700;
 /** Hard stop if the RPC cannot tell us the block height. ~150 blocks of blockhash life is about 60-90 s. */
 const WALL_CLOCK_CAP_MS = 120_000;
@@ -40,7 +42,8 @@ const WALL_CLOCK_CAP_MS = 120_000;
 /** What landing talks to; swapped out in tests. */
 export interface LandDeps {
   conn: Pick<Connection, "getSignatureStatuses" | "sendRawTransaction" | "getBlockHeight" | "getTransaction">;
-  jito: Pick<typeof jito, "sendBundle" | "bundleStatus" | "sendTransaction">;
+  jito: Pick<typeof jito, "sendBundle" | "bundleStatus">;
+  sender: (tx: VersionedTransaction) => Promise<string>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
 }
@@ -48,13 +51,14 @@ export interface LandDeps {
 const defaultDeps = (): LandDeps => ({
   conn: connection(),
   jito,
+  sender: sendViaSender,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   now: Date.now,
 });
 
 export async function landTransaction(
   tx: VersionedTransaction,
-  ctx: { label: string; lastValidBlockHeight: number; mint: string; numbers: Record<string, unknown> },
+  ctx: { label: string; mode: SendMode; lastValidBlockHeight: number; mint: string; numbers: Record<string, unknown> },
   deps: LandDeps = defaultDeps(),
 ): Promise<LandResult> {
   const { conn, sleep, now } = deps;
@@ -68,6 +72,7 @@ export async function landTransaction(
   const fail = (stage: string, message: string, extra: Record<string, unknown> = {}) =>
     new DetailedError(message, {
       stage,
+      sendMode: ctx.mode,
       mint: ctx.mint,
       signature,
       bundleId,
@@ -80,46 +85,42 @@ export async function landTransaction(
     });
 
   let bundleId: string | null = null;
-  let jitoError: string | null = null;
-  try {
-    bundleId = await deps.jito.sendBundle([tx]);
-    step("Jito sendBundle", `accepted, bundle ${bundleId}`);
-    log.info("jito", `${ctx.label}: bundle ${short(bundleId)} submitted`, { signature, mint: ctx.mint });
-  } catch (e) {
-    jitoError = (e as Error).message;
-    step("Jito sendBundle", `refused: ${jitoError}`);
-    log.warn("jito", `${ctx.label}: Jito refused the bundle (${jitoError}); sending the same transaction directly`, {
-      signature,
-      mint: ctx.mint,
-    });
-  }
-
   let lastJito: InflightStatus | "unknown" = "unknown";
-  let rebroadcasts = 0;
-  let lastRebroadcast = 0;
+  /** Latest answer per route, e.g. { "Helius Sender": "accepted", RPC: "refused: …" }. */
+  const routes: Record<string, string> = {};
+  let sends = 0;
+  let lastSend = 0;
   let blockHeight = 0;
   let lastHeightCheck = 0;
   let rpcError: string | null = null;
 
-  const rebroadcast = async () => {
-    lastRebroadcast = now();
-    rebroadcasts++;
-    const [viaJito, viaRpc] = await Promise.allSettled([
-      deps.jito.sendTransaction(tx),
-      conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 }),
-    ]);
-    if (rebroadcasts === 1) {
-      step("Jito sendTransaction", viaJito.status === "fulfilled" ? "accepted" : `refused: ${(viaJito.reason as Error).message}`);
-      step("RPC sendTransaction", viaRpc.status === "fulfilled" ? "accepted" : `refused: ${(viaRpc.reason as Error).message}`);
-      log.info("jito", `${ctx.label}: not landed via bundle after ${((now() - t0) / 1000).toFixed(1)} s; re-broadcasting the same signed transaction (cannot execute twice)`, {
-        signature,
-        mint: ctx.mint,
-      });
+  const record = (route: string, r: PromiseSettledResult<unknown>) => {
+    const result = r.status === "fulfilled" ? "accepted" : `refused: ${(r.reason as Error).message}`;
+    if (routes[route] !== result) step(route, sends > 1 ? `${result} (re-send ${sends - 1})` : result);
+    routes[route] = result;
+  };
+
+  const send = async () => {
+    lastSend = now();
+    sends++;
+    if (ctx.mode === "fast") {
+      const [viaSender, viaRpc] = await Promise.allSettled([deps.sender(tx), conn.sendRawTransaction(raw, { skipPreflight: true, maxRetries: 0 })]);
+      record("Helius Sender", viaSender);
+      record("RPC", viaRpc);
+      if (sends === 1) log.info("trade", `${ctx.label}: sent via Helius Sender + RPC`, { signature, mint: ctx.mint });
+      return;
+    }
+    const r = await Promise.allSettled([deps.jito.sendBundle([tx])]);
+    record("Jito sendBundle", r[0]);
+    if (r[0].status === "fulfilled") {
+      bundleId = r[0].value;
+      if (sends === 1) log.info("jito", `${ctx.label}: bundle ${short(bundleId)} submitted`, { signature, mint: ctx.mint });
     }
   };
 
+  await send();
+
   while (true) {
-    const elapsed = now() - t0;
 
     // 1. The chain is the only source of truth for whether it ran.
     try {
@@ -143,25 +144,21 @@ export async function landTransaction(
       rpcError = (e as Error).message;
     }
 
-    // 2. What Jito says, for the record and to decide whether to re-broadcast early.
-    if (bundleId) {
+    // 2. Protected mode: what Jito says about the bundle, for the record.
+    if (ctx.mode === "protected" && bundleId) {
       try {
         const b = await deps.jito.bundleStatus(bundleId);
-        const s = b?.status ?? "Invalid";
-        if (s !== lastJito) step("Jito bundle status", s === "Invalid" ? "Invalid (Jito has no record of this bundle)" : s);
-        lastJito = s;
+        const st = b?.status ?? "Invalid";
+        if (st !== lastJito) step("Jito bundle status", st === "Invalid" ? "Invalid (Jito has no record of this bundle)" : st);
+        lastJito = st;
       } catch (e) {
         if (lastJito !== "unknown") step("Jito bundle status", `lookup failed: ${(e as Error).message}`);
         lastJito = "unknown";
       }
     }
 
-    // 3. Re-broadcast the same bytes if the bundle was refused, failed, or is late, then every 2 s until it lands or
-    // expires. "Invalid" alone is not enough early on: Jito reports it for a moment before it indexes a new bundle.
-    const bundleLost = !bundleId || lastJito === "Failed";
-    if (rebroadcasts === 0 ? bundleLost || elapsed > BUNDLE_HEAD_START_MS : now() - lastRebroadcast > 2_000) {
-      await rebroadcast().catch(() => undefined);
-    }
+    // 3. Re-send the same bytes every 2 s until it lands or expires.
+    if (now() - lastSend > RESEND_MS) await send().catch(() => undefined);
 
     // 4. Expired? Then it can never land, and only then is it safe to say it failed.
     if (now() - lastHeightCheck > 2_000) {
@@ -187,8 +184,8 @@ export async function landTransaction(
       step("Blockhash", `expired at block ${ctx.lastValidBlockHeight} (now ${blockHeight}); it can no longer land`);
       throw fail(
         "not_landed",
-        `${ctx.label} did not land: ${whyNotLanded(jitoError, lastJito, rebroadcasts)} The transaction has expired, so nothing was spent and it cannot land later. Try again.`,
-        { jitoStatus: lastJito, jitoError, rebroadcasts, blockHeight },
+        `${ctx.label} did not land: ${whyNotLanded(ctx.mode, routes, lastJito, sends)} The transaction has expired, so nothing was spent and it cannot land later. Try again.`,
+        { routes, jitoStatus: lastJito, sends, blockHeight },
       );
     }
     if (now() - t0 > WALL_CLOCK_CAP_MS) {
@@ -196,20 +193,24 @@ export async function landTransaction(
       throw fail(
         "unknown",
         `${ctx.label}: could not confirm whether it landed, because the RPC stopped answering (${rpcError ?? "no answer"}). It MAY have gone through; check the transaction on Solscan before buying again.`,
-        { jitoStatus: lastJito, rpcError },
+        { routes, jitoStatus: lastJito, rpcError },
       );
     }
     await sleep(POLL_MS);
   }
 }
 
-function whyNotLanded(jitoError: string | null, jito: InflightStatus | "unknown", rebroadcasts: number) {
+function whyNotLanded(mode: SendMode, routes: Record<string, string>, jito: InflightStatus | "unknown", sends: number) {
+  const refused = Object.entries(routes).filter(([, r]) => r.startsWith("refused"));
   const parts: string[] = [];
-  if (jitoError) parts.push(`Jito refused the bundle (${jitoError}).`);
-  else if (jito === "Invalid") parts.push("Jito accepted the bundle but then had no record of it (Jito status \"Invalid\"), meaning it dropped it before any block.");
-  else if (jito === "Failed") parts.push("Jito marked the bundle failed in every region (usually the swap would have failed at that moment, e.g. price moved past your slippage).");
-  else parts.push(`Jito status was ${jito}.`);
-  if (rebroadcasts) parts.push(`The same transaction was also sent directly ${rebroadcasts} time(s) and no leader included it (network congestion or a priority fee too low for that moment).`);
+  if (refused.length) parts.push(refused.map(([route, r]) => `${route} ${r}.`).join(" "));
+  if (mode === "protected") {
+    if (jito === "Invalid") parts.push("Jito accepted the bundle but then had no record of it (Jito status \"Invalid\"), meaning it dropped it before any block.");
+    else if (jito === "Failed") parts.push("Jito marked the bundle failed in every region (usually the swap would have failed at that moment, e.g. price moved past your slippage).");
+    parts.push("Protected mode only lands with Jito leaders; Fast mode in Snipe Config also reaches the others.");
+  } else if (refused.length < Object.keys(routes).length) {
+    parts.push(`It was sent ${sends} time(s) and no leader included it (network congestion, or the priority fee or tip was too low for that moment).`);
+  }
   return parts.join(" ");
 }
 

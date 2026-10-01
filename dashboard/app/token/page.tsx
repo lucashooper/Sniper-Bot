@@ -572,7 +572,7 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
             <div className="flex justify-between text-[11px] text-neutral-500">
               <span>≈ {priceSol > 0 && sol > 0 ? compact(sol / priceSol) : "0"} {symbol}</span>
               <span>
-                slip {state.settings.slippagePct}% · tip {state.settings.jitoTipSol} SOL
+                slip {state.settings.slippagePct}% · tip {state.settings.jitoTipSol} SOL · {state.settings.sendMode === "protected" ? "protected" : "fast"}
               </span>
             </div>
             <Button variant="success" size="lg" className="w-full font-semibold" disabled={busy !== null || !(sol > 0)} onClick={() => void buy(sol)}>

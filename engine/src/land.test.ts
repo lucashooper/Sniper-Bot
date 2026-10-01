@@ -25,7 +25,7 @@ function fakes(opts: {
 }) {
   let t = 0;
   let height = 100;
-  const calls = { bundles: 0, jitoTx: 0, rpcSends: [] as Uint8Array[] };
+  const calls = { bundles: 0, sender: [] as Uint8Array[], rpcSends: [] as Uint8Array[] };
   let landed = false;
   const status = () => (landed ? { slot: 7, confirmations: 1, err: opts.chainErr ?? null, confirmationStatus: "confirmed" as const } : null);
   const deps: LandDeps = {
@@ -40,10 +40,10 @@ function fakes(opts: {
         return "bundle-1";
       },
       bundleStatus: async () => ({ status: opts.bundle === "refuse" ? "Invalid" : (opts.bundle ?? "Invalid") }),
-      sendTransaction: async () => {
-        calls.jitoTx++;
-        return "sig";
-      },
+    },
+    sender: async (tx) => {
+      calls.sender.push(tx.serialize());
+      return "sig";
     },
     conn: {
       getSignatureStatuses: (async () => {
@@ -67,33 +67,46 @@ function fakes(opts: {
   return { deps, calls };
 }
 
-const ctx = { label: "BUY TEST", lastValidBlockHeight: 150, mint: "Mint111", numbers: { jitoTipSol: 0.005 } };
+const ctx = { label: "BUY TEST", mode: "fast" as const, lastValidBlockHeight: 150, mint: "Mint111", numbers: { jitoTipSol: 0.005 } };
 
-test("a bundle Jito loses is re-broadcast as the same signed bytes and confirmed from the chain", async () => {
+test("fast mode sends the same signed bytes to Helius Sender and the RPC at once, never as a bundle", async () => {
   const tx = signedTx();
-  const { deps, calls } = fakes({ bundle: "Invalid", landsAfterRebroadcasts: 1 });
+  const { deps, calls } = fakes({ landsAfterRebroadcasts: 2 });
   const res = await landTransaction(tx, ctx, deps);
   assert.equal(res.slot, 7);
-  assert.equal(calls.bundles, 1);
-  assert.ok(calls.rpcSends.length >= 1);
-  for (const raw of calls.rpcSends) assert.deepEqual(Buffer.from(raw), Buffer.from(tx.serialize()), "only ever the one signed transaction");
-  assert.ok(res.steps.some((s) => s.result.includes("Invalid")));
+  assert.equal(calls.bundles, 0);
+  assert.ok(calls.sender.length >= 1 && calls.rpcSends.length >= 2);
+  for (const raw of [...calls.sender, ...calls.rpcSends]) assert.deepEqual(Buffer.from(raw), Buffer.from(tx.serialize()), "only ever the one signed transaction");
+  assert.equal(res.steps[0].step, "Helius Sender");
 });
 
-test("if Jito refuses the bundle the transaction is sent directly at once", async () => {
-  const { deps, calls } = fakes({ bundle: "refuse", landsAfterRebroadcasts: 1 });
-  const res = await landTransaction(signedTx(), ctx, deps);
-  assert.equal(res.bundleId, null);
-  assert.equal(calls.jitoTx, 1);
-  assert.equal(res.steps[0].result.startsWith("refused: Jito sendBundle HTTP 429"), true);
-});
-
-test("never-landed is reported only after the blockhash expires, with Jito's answer", async () => {
-  const { deps } = fakes({ bundle: "Invalid" });
-  await assert.rejects(landTransaction(signedTx(), ctx, deps), (e: unknown) => {
+test("protected mode only ever sends the bundle, and re-submits it while Jito has no record", async () => {
+  const { deps, calls } = fakes({ bundle: "Invalid" });
+  await assert.rejects(landTransaction(signedTx(), { ...ctx, mode: "protected" }, deps), (e: unknown) => {
     assert.ok(e instanceof DetailedError);
     assert.equal(e.details.stage, "not_landed");
     assert.match(e.message, /no record of it/);
+    return true;
+  });
+  assert.ok(calls.bundles > 1);
+  assert.equal(calls.sender.length + calls.rpcSends.length, 0, "protected mode never goes public");
+});
+
+test("a refused bundle is reported with Jito's own answer", async () => {
+  const { deps } = fakes({ bundle: "refuse" });
+  await assert.rejects(landTransaction(signedTx(), { ...ctx, mode: "protected" }, deps), (e: unknown) => {
+    assert.ok(e instanceof DetailedError);
+    assert.match(e.message, /Jito sendBundle refused: Jito sendBundle HTTP 429/);
+    return true;
+  });
+});
+
+test("never-landed is reported only after the blockhash expires", async () => {
+  const { deps } = fakes({});
+  await assert.rejects(landTransaction(signedTx(), ctx, deps), (e: unknown) => {
+    assert.ok(e instanceof DetailedError);
+    assert.equal(e.details.stage, "not_landed");
+    assert.match(e.message, /no leader included it/);
     assert.match(e.message, /nothing was spent/);
     assert.ok(Array.isArray(e.details.steps));
     return true;

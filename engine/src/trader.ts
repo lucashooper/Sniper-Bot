@@ -12,6 +12,7 @@ import { DetailedError, log } from "./bus.js";
 import { dynamicPriorityFee } from "./fees.js";
 import { tipFloorSol, tipInstruction } from "./jito.js";
 import { explainError, landTransaction } from "./land.js";
+import { SENDER_MIN_TIP_SOL, senderTipInstruction } from "./sender.js";
 import { getGroup } from "./groups.js";
 import {
   findPosition,
@@ -43,10 +44,12 @@ function walletLabel(walletId: string) {
 
 async function tipSol(emergency: boolean): Promise<number> {
   const s = getSettings();
-  if (emergency) return s.antiRug.emergencyTipSol;
-  if (!s.jitoTipDynamic) return s.jitoTipSol;
+  // Helius Sender only uses every route (Jito plus staked connections) for tips of at least 0.001 SOL.
+  const min = s.sendMode === "protected" ? 0 : SENDER_MIN_TIP_SOL;
+  if (emergency) return Math.max(min, s.antiRug.emergencyTipSol);
+  if (!s.jitoTipDynamic) return Math.max(min, s.jitoTipSol);
   const floor = await tipFloorSol();
-  return Math.min(s.jitoTipMaxSol, Math.max(s.jitoTipSol, floor ?? 0));
+  return Math.max(min, Math.min(s.jitoTipMaxSol, Math.max(s.jitoTipSol, floor ?? 0)));
 }
 
 interface Landed {
@@ -80,6 +83,7 @@ async function landSwap(opts: {
     ? Math.max(s.priorityFeeMicroLamports, 1_000_000)
     : s.priorityFeeMicroLamports || (await dynamicPriorityFee(opts.hotAccounts));
   const tip = await tipSol(opts.emergency);
+  const mode = s.sendMode === "protected" ? "protected" : "fast";
   const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
   const msg = new TransactionMessage({
     payerKey: opts.kp.publicKey,
@@ -88,14 +92,14 @@ async function landSwap(opts: {
       ComputeBudgetProgram.setComputeUnitLimit({ units: s.computeUnitLimit }),
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: cuPrice }),
       ...opts.instructions,
-      tipInstruction(opts.kp.publicKey, lamports(tip)),
+      mode === "protected" ? tipInstruction(opts.kp.publicKey, lamports(tip)) : senderTipInstruction(opts.kp.publicKey, lamports(tip)),
     ],
   }).compileToV0Message();
   const tx = new VersionedTransaction(msg);
   tx.sign([opts.kp]);
 
   const priorityFeeSol = (cuPrice * s.computeUnitLimit) / 1e6 / LAMPORTS;
-  const numbers = { jitoTipSol: tip, priorityFeeSol, cuPrice, computeUnitLimit: s.computeUnitLimit, slippagePct: s.slippagePct };
+  const numbers = { sendMode: mode, tipSol: tip, priorityFeeSol, cuPrice, computeUnitLimit: s.computeUnitLimit, slippagePct: s.slippagePct };
   const sim = await conn.simulateTransaction(tx, { sigVerify: false, commitment: "processed" });
   if (sim.value.err) {
     const logs = sim.value.logs ?? [];
@@ -111,11 +115,11 @@ async function landSwap(opts: {
       logs: logs.slice(-15),
     });
   }
-  log.info("trade", `${opts.label}: simulation OK (${sim.value.unitsConsumed ?? "?"} CU), sending with tip ${tip.toFixed(4)} SOL, CU price ${cuPrice}`, {
+  log.info("trade", `${opts.label}: simulation OK (${sim.value.unitsConsumed ?? "?"} CU), sending (${mode === "fast" ? "fast: Helius Sender + RPC" : "protected: Jito bundle"}) with tip ${tip.toFixed(4)} SOL, CU price ${cuPrice}`, {
     mint: opts.mint.toBase58(),
   });
 
-  const res = await landTransaction(tx, { label: opts.label, lastValidBlockHeight, mint: opts.mint.toBase58(), numbers });
+  const res = await landTransaction(tx, { label: opts.label, mode, lastValidBlockHeight, mint: opts.mint.toBase58(), numbers });
   const { signature } = res;
   const bundleId = res.bundleId ?? "";
   log.success("jito", `${opts.label}: landed in slot ${res.slot ?? "?"} after ${((res.steps.at(-1)?.ms ?? 0) / 1000).toFixed(1)} s`, {
@@ -175,7 +179,7 @@ async function ensureFunds(walletName: string, owner: PublicKey, sol: number, mi
   const venueFee = sol * 0.02;
   const need = sol + venueFee + tip + priority + ACCOUNT_RENT_SOL + 0.00001;
   if (balance >= need) return;
-  const parts = `${sol} buy + ~${venueFee.toFixed(4)} Pump.fun fee + ${tip} Jito tip + ~${priority.toFixed(4)} priority fee + up to ${ACCOUNT_RENT_SOL} token account rent`;
+  const parts = `${sol} buy + ~${venueFee.toFixed(4)} Pump.fun fee + ${tip} landing tip + ~${priority.toFixed(4)} priority fee + up to ${ACCOUNT_RENT_SOL} token account rent`;
   throw new DetailedError(`Not enough SOL in ${walletName}: it has ${balance.toFixed(4)} SOL, this buy needs about ${need.toFixed(4)} SOL (${parts})`, {
     stage: "balance",
     mint,

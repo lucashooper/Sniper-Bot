@@ -67,7 +67,11 @@ export default function SnipePage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Snipe Configuration</h1>
-          <p className="mt-1 text-sm text-neutral-400">Buys go out as a Jito bundle: all-or-nothing, never in the public mempool, so a failed or front-run buy costs nothing.</p>
+          <p className="mt-1 text-sm text-neutral-400">
+            {draft.sendMode === "protected"
+              ? "Buys go out as a private Jito bundle: never public before they land, so they cannot be sandwiched, but only Jito leaders can include them."
+              : "Buys go out at once through Helius Sender (Jito plus staked validator routes) and your RPC, so they land with whichever leader is up."}
+          </p>
         </div>
         {dirty && <Button variant="primary" onClick={() => save().then(() => toast.show("Settings saved"), (e) => toast.show(e.message, "err"))}>Save settings</Button>}
       </div>
@@ -118,7 +122,16 @@ export default function SnipePage() {
             <div className="grid gap-4 md:grid-cols-3">
               <Field label="Slippage"><Input type="number" min={0.5} max={99} value={draft.slippagePct} onChange={(e) => set({ slippagePct: Number(e.target.value) })} suffix="%" /></Field>
               <Field label="Priority fee" hint="0 = fetch live each trade"><Input type="number" min={0} value={draft.priorityFeeMicroLamports} onChange={(e) => set({ priorityFeeMicroLamports: Number(e.target.value) })} suffix="µL/CU" /></Field>
-              <Field label="Jito tip"><Input type="number" step="0.001" min={0.000001} value={draft.jitoTipSol} onChange={(e) => set({ jitoTipSol: Number(e.target.value) })} suffix="SOL" /></Field>
+              <Field label="Tip" hint={draft.sendMode === "protected" ? "Paid to Jito" : "Paid to Helius Sender, min 0.001"}><Input type="number" step="0.001" min={0.000001} value={draft.jitoTipSol} onChange={(e) => set({ jitoTipSol: Number(e.target.value) })} suffix="SOL" /></Field>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-ink-950/60 px-4 py-3">
+              <div>
+                <div className="text-sm font-medium">Protected (Jito bundle)</div>
+                <div className="text-xs text-neutral-500">
+                  Off (default): fastest, lands with any leader; a sandwich can cost up to your slippage. On: private bundle, no sandwiches, but slower and Jito can drop it. Worth it for large buys.
+                </div>
+              </div>
+              <Toggle checked={draft.sendMode === "protected"} onChange={(v) => set({ sendMode: v ? "protected" : "fast" })} />
             </div>
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-ink-950/60 px-4 py-3">
               <div>

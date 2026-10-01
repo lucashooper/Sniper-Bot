@@ -59,6 +59,8 @@ export interface Settings {
   jitoTipSol: number;
   jitoTipDynamic: boolean;
   jitoTipMaxSol: number;
+  /** "fast": Helius Sender + RPC in parallel; "protected": private Jito bundle only. */
+  sendMode?: "fast" | "protected";
   exitRules: ExitRule[];
   antiRug: {
     enabled: boolean;
