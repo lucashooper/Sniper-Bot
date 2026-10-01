@@ -11,6 +11,7 @@ import type { Launch, Position, SellAllResult, TapeTrade, TokenDetail, Trade } f
 import { Avatar, CopyCa, CurveBar, Socials, age, defaultWalletId, money, useNow } from "@/components/token-feed";
 import { INTERVALS, TokenChart, type ChartUnit } from "@/components/token-chart";
 import { Badge, Button, Card, Empty, cx, useToast } from "@/components/ui";
+import { DevChip } from "@/components/devs";
 
 export default function TokenPage() {
   return (
@@ -196,6 +197,7 @@ function TokenView({ mint }: { mint: string }) {
             <div className="mt-0.5 flex items-center gap-2.5 text-xs">
               {l && <span className="font-medium text-emerald-400">{age(l.ts, now)}</span>}
               {l && <Socials l={l} />}
+              {l && <DevChip address={l.creator} prefix="dev" />}
               {l?.migrated && <Badge tone="amber">PumpSwap</Badge>}
               {simulated && <Badge>sim</Badge>}
               {!tracked && <Badge>not in feed</Badge>}
@@ -433,15 +435,17 @@ function Addr({ a, dev, sig }: { a: string; dev?: boolean; sig?: string }) {
   const real = !a.startsWith("sim-");
   return (
     <span className="inline-flex items-center gap-1.5">
-      {real ? (
-        <a href={accountUrl(a)} target="_blank" rel="noopener noreferrer" className="text-neutral-300 hover:text-violet-300">{short(a)}</a>
-      ) : (
-        <span className="text-neutral-400">{a.replace("sim-trader-", "trader ")}</span>
-      )}
+      {/* The wallet's label when it has one; click to label it. */}
+      <DevChip address={a} className="font-sans" />
       {dev && (
         <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] font-sans font-semibold text-amber-300" title="Coin creator">
           <Crown size={9} /> DEV
         </span>
+      )}
+      {real && !sig && (
+        <a href={accountUrl(a)} target="_blank" rel="noopener noreferrer" className="text-neutral-600 hover:text-neutral-300" title="View wallet on Solscan">
+          <ExternalLink size={10} />
+        </a>
       )}
       {sig && (
         <a href={solscan(sig)} target="_blank" rel="noopener noreferrer" className="text-neutral-600 hover:text-neutral-300" title="View transaction">

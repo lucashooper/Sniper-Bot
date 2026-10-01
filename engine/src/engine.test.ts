@@ -202,6 +202,67 @@ test("a coin open on its page stays tracked after it scrolls out of the feed", a
   _resetFeed();
 });
 
+test("pulse columns: a coin on the final stretch or graduated outlives the flood of new launches", async () => {
+  const { addLaunch, applyTrade, getLaunch, markMigrated, feedList, pulseBucket, _resetFeed } = await import("./feed.js");
+  _resetFeed();
+  const add = (mint: string, ts = Date.now()) => addLaunch({ mint, name: mint, symbol: mint, uri: "", creator: "c", priceSol: 3e-8, marketCapSol: 30, ts, simulated: true, curveTokens: 793_100_000 });
+  add("stretch", Date.now() - 60_000);
+  add("grad", Date.now() - 60_000);
+  // 50% of the curve sold: Final stretch.
+  applyTrade({ mint: "stretch", priceSol: 1e-7, isBuy: true, solAmount: 40, tokenAmount: 396_550_000, trader: "w", byCreator: false, realTokenReserves: 396_550_000, realSolReserves: 40 });
+  markMigrated("grad");
+  assert.equal(pulseBucket(getLaunch("stretch")!), "stretch");
+  assert.equal(pulseBucket(getLaunch("grad")!), "graduated");
+  assert.ok(getLaunch("grad")!.migratedAt);
+  for (let i = 0; i < 200; i++) add(`new-${i}`);
+  assert.ok(getLaunch("stretch"), "final-stretch coin must not be evicted by new launches");
+  assert.ok(getLaunch("grad"), "graduated coin must not be evicted by new launches");
+  assert.equal(getLaunch("new-0"), undefined, "oldest new pair is dropped");
+  const list = feedList();
+  assert.equal(list.filter((l) => pulseBucket(l) === "new").length, 50);
+  assert.ok(list.some((l) => l.mint === "stretch") && list.some((l) => l.mint === "grad"));
+  _resetFeed();
+});
+
+test("feed counts holders with at least one token", async () => {
+  const { addLaunch, applyTrade, getLaunch, _resetFeed } = await import("./feed.js");
+  _resetFeed();
+  addLaunch({ mint: "h", name: "h", symbol: "h", uri: "", creator: "c", priceSol: 3e-8, marketCapSol: 30, ts: Date.now(), simulated: true });
+  applyTrade({ mint: "h", priceSol: 3e-8, isBuy: true, solAmount: 1, tokenAmount: 1000, trader: "a", byCreator: false });
+  applyTrade({ mint: "h", priceSol: 3e-8, isBuy: true, solAmount: 1, tokenAmount: 1000, trader: "b", byCreator: false });
+  applyTrade({ mint: "h", priceSol: 3e-8, isBuy: true, solAmount: 1, tokenAmount: 1000, trader: "a", byCreator: false });
+  assert.equal(getLaunch("h")!.holders, 2);
+  applyTrade({ mint: "h", priceSol: 3e-8, isBuy: false, solAmount: 1, tokenAmount: 2000, trader: "a", byCreator: false });
+  assert.equal(getLaunch("h")!.holders, 1);
+  _resetFeed();
+});
+
+test("dev labels: saved per wallet, validated, survive a settings save, and steer auto-snipe", async () => {
+  const { setDevTag, removeDevTag, getSettings, updateSettings, DevTagError } = await import("./settings.js");
+  const { evaluateFilters } = await import("./engine.js");
+  const dev = Keypair.generate().publicKey.toBase58();
+  const t = setDevTag(dev, { name: "  Serial rugger with a very very long name indeed  ", emoji: "💀👀", mode: "hide" });
+  assert.equal(t.name.length, 32);
+  assert.equal(t.emoji, "💀");
+  assert.throws(() => setDevTag("not-an-address", { name: "x" }), DevTagError);
+  assert.throws(() => setDevTag(dev, { mode: "bogus" as any }), DevTagError);
+  // A stale settings form must not wipe labels.
+  updateSettings({ devs: {} } as any);
+  assert.equal(getSettings().devs[dev].mode, "hide");
+  const f = { ...getSettings().filters };
+  const base: any = { mint: "m", name: "X", symbol: "X", creator: dev, ts: Date.now(), marketCapSol: 40, liquiditySol: 5, curvePct: 10, devHoldPct: 1, devSold: false, migrated: false, meta: null, metaStatus: "none" };
+  const hidden = evaluateFilters(base, f, [], Date.now(), getSettings().devs) as any;
+  assert.equal(hidden.pass, false);
+  assert.equal(hidden.final, true);
+  assert.match(hidden.reason, /💀/);
+  setDevTag(dev, { mode: "follow" });
+  assert.equal(getSettings().devs[dev].name.startsWith("Serial"), true, "a partial update keeps the name");
+  assert.equal(evaluateFilters(base, { ...f, onlyFollowedDevs: true }, [], Date.now(), getSettings().devs).pass, true);
+  assert.equal(evaluateFilters({ ...base, creator: "someone-else" }, { ...f, onlyFollowedDevs: true }, [], Date.now(), getSettings().devs).pass, false);
+  assert.equal(removeDevTag(dev), true);
+  assert.equal(removeDevTag(dev), false);
+});
+
 test("metadata parsing keeps only http(s) links and normalises socials", async () => {
   const { parseMeta, hasSocials } = await import("./feed.js");
   const m = parseMeta({ image: "ipfs://QmImage", twitter: "@coin", telegram: "t.me/coin", website: "javascript:alert(1)" });

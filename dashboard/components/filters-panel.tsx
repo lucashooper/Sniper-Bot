@@ -17,6 +17,7 @@ export function FiltersPanel({ draft, set }: { draft: Settings; set: (patch: Par
     ["requireSocials", "Require social links", "At least one of X/Twitter, Telegram or website in the coin's metadata."],
     ["requireImage", "Require an image", "Skip coins with no image uploaded."],
     ["skipIfDevSold", "Skip if the dev sold", "Drop the coin as soon as its creator wallet sells any amount."],
+    ["onlyFollowedDevs", "Only followed devs", "Buy only coins created by devs you follow in the dev list. Hidden devs are always skipped."],
   ];
   return (
     <div className="space-y-4">
@@ -35,7 +36,7 @@ export function FiltersPanel({ draft, set }: { draft: Settings; set: (patch: Par
               <span className="block text-sm text-neutral-200">{label}</span>
               <span className="block text-xs text-neutral-500">{hint}</span>
             </span>
-            <Toggle checked={f[k] as boolean} onChange={(v) => up({ [k]: v } as Partial<SnipeFilters>)} />
+            <Toggle checked={!!f[k]} onChange={(v) => up({ [k]: v } as Partial<SnipeFilters>)} />
           </label>
         ))}
       </div>

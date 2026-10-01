@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { diagnose, type Check } from "./diagnose";
 import { accessToken, supabaseEnabled } from "./supabase";
+import { pulseBucket, takePerBucket } from "./pulse";
 import type { EngineState, Launch, LogLine, TapeTrade } from "./types";
 
 /** Accepts "host", "host/" or a full URL; a bare host gets https:// (what Railway's domains need). */
@@ -116,19 +117,17 @@ interface Watch {
   onTape: (p: TapePush) => void;
 }
 
-/** How many coins the feed list holds; matches the engine. */
-const FEED_SIZE = 60;
-
 /** Applies pushed coin updates to the feed list. Unchanged coins keep their object, so their rows skip re-rendering. */
 function mergeLaunches(cur: Launch[], upd: Launch[]): Launch[] {
   const byMint = new Map(cur.map((l) => [l.mint, l]));
   let added = false;
   for (const u of upd) {
-    if (!byMint.has(u.mint)) added = true;
+    const old = byMint.get(u.mint);
+    if (!old || pulseBucket(old) !== pulseBucket(u)) added = true;
     byMint.set(u.mint, u);
   }
-  if (!added) return cur.map((l) => byMint.get(l.mint)!);
-  return [...byMint.values()].sort((a, b) => b.ts - a.ts).slice(0, FEED_SIZE);
+  // A coin that moved column (curve crossed 40%, graduated) can push the oldest of that column out, as on the engine.
+  return takePerBucket([...byMint.values()].sort((a, b) => b.ts - a.ts));
 }
 
 interface Ctx {
