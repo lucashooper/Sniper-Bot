@@ -1,10 +1,11 @@
 import http from "node:http";
 import crypto from "node:crypto";
+import zlib from "node:zlib";
 import { WebSocketServer, type WebSocket } from "ws";
 import { env, hasRpc, hasSupabase, isPublicBind } from "./config.js";
 import { checkOwnerToken, cloudStatus, type AuthResult } from "./cloud.js";
 import { bus, DetailedError, log, type LogLine } from "./bus.js";
-import { recentLaunches, solUsd, tokenDetail } from "./feed.js";
+import { recentLaunches, solUsd, takeDirty, tapeBounds, tapeSince, tokenDetail, touchView, type Launch } from "./feed.js";
 import { isUnlocked } from "./keystore.js";
 import {
   closedPositions,
@@ -21,6 +22,9 @@ import { createGroup, generateIntoGroup, listGroups, removeGroup, updateGroup } 
 import { executeBuy, executeSell, isLive, sellAll } from "./trader.js";
 import { fundGroup, fundWallet, getBalances, reclaimAll, refreshBalances, withdraw } from "./walletOps.js";
 import { generateWallet, importWallet, listWallets, removeWallet, updateWallet } from "./wallets.js";
+
+/** Coins the dashboard's feed shows; the engine tracks more (for auto-snipe and open coin pages). */
+const FEED_SIZE = 60;
 
 type Handler = (body: any, params: Record<string, string>, url: URL) => Promise<unknown> | unknown;
 const routes: Array<{ method: string; pattern: RegExp; keys: string[]; handler: Handler }> = [];
@@ -53,10 +57,10 @@ route("GET", "/api/state", () => ({
   balances: getBalances(),
   positions: openPositions(),
   metrics: metrics(),
-  launches: recentLaunches().slice(0, 60),
+  launches: recentLaunches().slice(0, FEED_SIZE),
   solUsd: solUsd(),
 }));
-route("GET", "/api/launches", () => ({ launches: recentLaunches().slice(0, 60), solUsd: solUsd() }));
+route("GET", "/api/launches", () => ({ launches: recentLaunches().slice(0, FEED_SIZE), solUsd: solUsd() }));
 route("GET", "/api/token/:mint", (_b, p, url) => {
   const d = tokenDetail(decodeURIComponent(p.mint), Number(url.searchParams.get("after") ?? 0) || 0);
   return d ? { tracked: true, ...d, solUsd: solUsd() } : { tracked: false, solUsd: solUsd() };
@@ -162,6 +166,18 @@ function cors(req: http.IncomingMessage, res: http.ServerResponse) {
   res.setHeader("vary", "origin");
   res.setHeader("access-control-allow-headers", "authorization, content-type");
   res.setHeader("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+  // Every authorised request is "non-simple" and needs a preflight; let the browser reuse the answer (Chrome caps
+  // this at 2 hours) instead of paying an extra round trip before each one.
+  res.setHeader("access-control-max-age", "7200");
+}
+
+/** JSON reply, gzipped when it is big enough to matter and the browser accepts it (the state and feed are ~50 KB raw). */
+function sendJson(req: http.IncomingMessage, res: http.ServerResponse, code: number, out: unknown) {
+  const body = JSON.stringify(out);
+  if (body.length > 1024 && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""))) {
+    return res.writeHead(code, { "content-type": "application/json", "content-encoding": "gzip", vary: "origin, accept-encoding" }).end(zlib.gzipSync(body, { level: 4 }));
+  }
+  res.writeHead(code, { "content-type": "application/json" }).end(body);
 }
 
 export function startServer() {
@@ -215,7 +231,7 @@ export function startServer() {
     }
     try {
       const out = await r.handler(body, params, url);
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(out ?? { ok: true }));
+      sendJson(req, res, 200, out ?? { ok: true });
     } catch (e) {
       const code = e instanceof HttpError ? e.code : 400;
       const details = e instanceof DetailedError ? e.details : undefined;
@@ -224,7 +240,8 @@ export function startServer() {
   });
 
   // Live push: log lines as they happen, plus "changed" hints so the dashboard re-fetches only what moved.
-  const wss = new WebSocketServer({ noServer: true });
+  // Compress larger frames (feed batches); small ones (log lines) go as-is so they are not delayed.
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: { threshold: 1024, zlibDeflateOptions: { level: 3 } } });
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname !== "/ws") return socket.destroy();
@@ -237,6 +254,8 @@ export function startServer() {
   // Browsers cannot set headers on a WebSocket, and a token in the URL ends up in proxy logs, so the first message
   // must be {"type":"auth","token":"..."}. Nothing is sent to a socket until it has authenticated.
   const clients = new Set<WebSocket>();
+  /** The coin each dashboard has open on its coin page, and the last trade of it that dashboard already has. */
+  const watching = new Map<WebSocket, { mint: string; seq: number }>();
   wss.on("connection", (ws, req: http.IncomingMessage) => {
     const origin = req?.headers.origin;
     const deadline = setTimeout(() => ws.close(4401, "No sign-in message within 5s"), 5_000);
@@ -257,11 +276,25 @@ export function startServer() {
       }
       clients.add(ws);
       log.debug("engine", `Dashboard connected from ${origin ?? "no origin"}`);
-      ws.send(JSON.stringify({ type: "hello", logs: bus.history.slice(-200), status: status() }));
+      // push: the dashboard can take feed updates from this socket instead of re-fetching the feed on every hint.
+      ws.send(JSON.stringify({ type: "hello", logs: bus.history.slice(-200), status: status(), push: 1 }));
+      ws.on("message", (raw) => {
+        try {
+          const m = JSON.parse(String(raw));
+          if (m?.type !== "watch") return;
+          if (typeof m.mint === "string" && m.mint) {
+            watching.set(ws, { mint: m.mint, seq: Number(m.after) || 0 });
+            touchView(m.mint);
+          } else watching.delete(ws);
+        } catch {
+          /* ignore malformed messages */
+        }
+      });
     });
     ws.on("close", () => {
       clearTimeout(deadline);
       clients.delete(ws);
+      watching.delete(ws);
     });
   });
   const broadcast = (msg: unknown) => {
@@ -269,6 +302,28 @@ export function startServer() {
     clients.forEach((c) => c.readyState === c.OPEN && c.send(s));
   };
   bus.on("log", (line: LogLine) => broadcast({ type: "log", line }));
+  // Live feed: every ~100ms, only the coins that changed (the dashboard merges them into its list), plus new trades of
+  // the coin each dashboard has open. Replaces a hint followed by a full re-fetch, which cost a round trip per tick.
+  bus.on("feed", () => {
+    const changed = takeDirty();
+    // Older dashboards still re-fetch on this hint.
+    bus.changed("launches");
+    if (!clients.size) return;
+    const top = recentLaunches().slice(0, FEED_SIZE);
+    const inFeed = new Set(top.map((l) => l.mint));
+    const set = new Set(changed);
+    const launches: Launch[] = top.filter((l) => set.has(l.mint));
+    if (launches.length) broadcast({ type: "feed", launches, solUsd: solUsd() });
+    for (const [ws, w] of watching) {
+      if (ws.readyState !== ws.OPEN || !set.has(w.mint)) continue;
+      const fresh = tapeSince(w.mint, w.seq);
+      const d = tapeBounds(w.mint);
+      if (!d) continue;
+      if (fresh.length) w.seq = fresh[fresh.length - 1].seq;
+      // The coin's own row rides along when it has left the feed list.
+      ws.send(JSON.stringify({ type: "tape", mint: w.mint, launch: inFeed.has(w.mint) ? undefined : d.launch, trades: fresh, firstSeq: d.firstSeq, lastSeq: d.lastSeq }));
+    }
+  });
   // Coalesce bursts of change notifications (price ticks) to at most one per topic every 250ms.
   const pending = new Set<string>();
   let flush: NodeJS.Timeout | null = null;

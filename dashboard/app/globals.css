@@ -1,12 +1,14 @@
 @import "tailwindcss";
 
 @theme {
-  --color-ink-950: #0b0c0e;
-  --color-ink-900: #121316;
-  --color-ink-850: #17181c;
-  --color-ink-800: #1d1f24;
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --color-ink-950: #08090b;
+  --color-ink-900: #0e0f12;
+  --color-ink-850: #131418;
+  --color-ink-800: #18191e;
+  --color-ink-700: #1f2026;
+  /* System UI fonts (SF Pro / SF Mono on a Mac, Segoe on Windows): crisp, and nothing to download. */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
 }
 
 :root {
@@ -15,25 +17,55 @@
 
 body {
   background: var(--color-ink-950);
-  color: #e5e5e5;
+  color: #e4e4e7;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Every number lines up down a column, the way trading terminals set them. */
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.003em;
 }
 
-/* Glass card: subtle top highlight over a near-black panel, Whop style. */
+/* Panels: near-black with a faint top highlight and a hairline edge. */
 .glass {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01));
-  backdrop-filter: blur(12px);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.008));
 }
 
+/* A blurred backdrop only where something scrolls under it (header, sticky table heads), never per row. */
+.frost {
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #26272d transparent;
+}
 .scrollbar-thin::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: #2a2c31;
-  border-radius: 8px;
+  background: #26272d;
+  border-radius: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 input[type="number"]::-webkit-inner-spin-button {
   -webkit-appearance: none;
+}
+
+/* Brief tint when a feed number changes, so movement reads at a glance. */
+@keyframes tick-up {
+  from { color: #6ee7b7; }
+}
+@keyframes tick-down {
+  from { color: #fda4af; }
+}
+.tick-up { animation: tick-up 0.9s ease-out; }
+.tick-down { animation: tick-down 0.9s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tick-up, .tick-down { animation: none; }
 }

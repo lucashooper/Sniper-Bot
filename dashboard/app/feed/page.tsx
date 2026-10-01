@@ -28,15 +28,12 @@ const VIEWS = [
 export default function FeedPage() {
   const [tab, setTab] = useState<"tokens" | "logs">("tokens");
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Live Feed</h1>
-          <p className="mt-1 text-sm text-neutral-400">New Pump.fun launches as they are created, with one-click buys, and the engine&apos;s live log.</p>
-        </div>
-        <div className="flex rounded-xl border border-neutral-800 bg-ink-900 p-1">
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-4">
+        <h1 className="text-lg font-semibold tracking-tight">Live Feed</h1>
+        <div className="flex rounded-lg border border-white/[0.06] bg-white/[0.02] p-0.5">
           {(["tokens", "logs"] as const).map((t) => (
-            <button key={t} onClick={() => setTab(t)} className={cx("rounded-lg px-4 py-1.5 text-sm capitalize", tab === t ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-200")}>
+            <button key={t} onClick={() => setTab(t)} className={cx("rounded-md px-3 py-1 text-xs font-medium capitalize transition", tab === t ? "bg-white/[0.08] text-white" : "text-neutral-500 hover:text-neutral-200")}>
               {t}
             </button>
           ))}
@@ -83,47 +80,47 @@ function Tokens() {
     <>
       {toast.node}
       <Card>
-        <div className="flex flex-wrap items-center gap-3 border-b border-neutral-800/80 px-4 py-3">
-          <div className="flex gap-1">
+        <div className="flex flex-wrap items-center gap-3 border-b border-white/[0.05] px-3 py-2">
+          <div className="flex items-center gap-4 pl-1">
             {VIEWS.map((v) => (
-              <button key={v.id} onClick={() => setView(v.id)} className={cx("rounded-lg px-3 py-1.5 text-sm font-medium", view === v.id ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-200")}>
+              <button key={v.id} onClick={() => setView(v.id)} className={cx("text-[15px] font-medium transition", view === v.id ? "text-white" : "text-neutral-500 hover:text-neutral-300")}>
                 {v.label}
               </button>
             ))}
           </div>
-          <div className="relative min-w-[180px] flex-1">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-600" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search by name, ticker or CA" className="h-9 w-full rounded-xl border border-neutral-800 bg-ink-950 pl-8 pr-3 text-sm outline-none focus:border-violet-500/60" />
+          <Badge tone={state.status.marketSource === "stream" ? "green" : "neutral"}>{state.status.marketSource === "stream" ? "mainnet" : "synthetic"}</Badge>
+          <div className="relative ml-auto w-full max-w-[260px]">
+            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-600" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter this list" className="h-8 w-full rounded-lg border border-white/[0.06] bg-white/[0.02] pl-7 pr-3 text-[13px] outline-none transition placeholder:text-neutral-600 focus:border-white/[0.14]" />
           </div>
-          <Badge tone={state.status.marketSource === "stream" ? "green" : "violet"}>{state.status.marketSource === "stream" ? "mainnet" : "synthetic"}</Badge>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-3 border-b border-neutral-800/80 px-4 py-3 text-sm">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-white/[0.05] px-4 py-2 text-[13px]">
           <label className="flex items-center gap-2">
-            <span className="text-neutral-400">Presets</span>
+            <span className="text-neutral-500">Presets</span>
             <input
               value={presetText ?? presets.join(", ")}
               onChange={(e) => setPresetText(e.target.value)}
               onBlur={savePresets}
               onKeyDown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()}
-              className="h-8 w-28 rounded-lg border border-neutral-800 bg-ink-950 px-2 font-mono text-xs outline-none focus:border-violet-500/60"
+              className="h-7 w-28 rounded-md border border-white/[0.06] bg-white/[0.02] px-2 text-xs outline-none transition focus:border-white/[0.14]"
               title="Comma-separated SOL amounts for the buy buttons"
             />
           </label>
           <label className="flex items-center gap-2">
-            <span className="text-neutral-400">Custom</span>
-            <input type="number" min={0} step="0.01" value={custom} onChange={(e) => setCustom(Number(e.target.value))} className="h-8 w-20 rounded-lg border border-neutral-800 bg-ink-950 px-2 font-mono text-xs outline-none focus:border-violet-500/60" />
+            <span className="text-neutral-500">Custom</span>
+            <input type="number" min={0} step="0.01" value={custom} onChange={(e) => setCustom(Number(e.target.value))} className="h-7 w-20 rounded-md border border-white/[0.06] bg-white/[0.02] px-2 text-xs outline-none transition focus:border-white/[0.14]" />
             <span className="text-xs text-neutral-500">SOL</span>
           </label>
           <label className="flex items-center gap-2">
-            <span className="text-neutral-400">Wallet</span>
-            <select value={chosen} onChange={(e) => setWalletId(e.target.value)} className="h-8 rounded-lg border border-neutral-800 bg-ink-950 px-2 text-xs outline-none focus:border-violet-500/60">
+            <span className="text-neutral-500">Wallet</span>
+            <select value={chosen} onChange={(e) => setWalletId(e.target.value)} className="h-7 rounded-md border border-white/[0.06] bg-ink-900 px-2 text-xs outline-none transition focus:border-white/[0.14]">
               <WalletOptions paper={!live} />
             </select>
           </label>
           <div className="ml-auto flex items-center gap-3">
             <span className="flex items-center gap-2">
-              <span className="text-neutral-400">Auto-snipe</span>
+              <span className="text-neutral-500">Auto-snipe</span>
               <Toggle checked={state.settings.autoSnipe} onChange={(v) => save({ autoSnipe: v }).then(() => toast.show(v ? `Auto-snipe on: ${state.settings.autoSnipeSol} SOL per coin that passes your filters` : "Auto-snipe off"), (e) => toast.show(e.message, "err"))} />
             </span>
             <Button size="sm" onClick={() => setFiltersOpen(true)}>
@@ -132,7 +129,7 @@ function Tokens() {
           </div>
         </div>
 
-        <div className="max-h-[calc(100vh-300px)] min-h-[420px] overflow-y-auto scrollbar-thin">
+        <div className="max-h-[calc(100vh-196px)] min-h-[420px] overflow-y-auto scrollbar-thin">
           <TokenFeed launches={launches} presets={presets} custom={custom} walletId={chosen} />
         </div>
       </Card>
@@ -180,7 +177,7 @@ function Logs() {
       action={
         <div className="flex flex-wrap gap-1">
           {LOG_FILTERS.map((x, i) => (
-            <button key={x.label} onClick={() => setF(i)} className={cx("rounded-lg px-2.5 py-1 text-xs", f === i ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-200")}>
+            <button key={x.label} onClick={() => setF(i)} className={cx("rounded-lg px-2.5 py-1 text-xs", f === i ? "bg-white/[0.08] text-white" : "text-neutral-500 hover:text-neutral-200")}>
               {x.label}
             </button>
           ))}

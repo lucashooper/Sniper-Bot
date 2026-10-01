@@ -58,7 +58,7 @@ export function PositionsTable() {
         </div>
       )}
       <table className="w-full min-w-[820px]">
-        <thead className="border-b border-neutral-800">
+        <thead className="border-b border-white/[0.07]">
           <tr>
             <Th>Token</Th>
             <Th>Wallet</Th>
@@ -69,7 +69,7 @@ export function PositionsTable() {
             <Th className="text-right">Actions</Th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-neutral-800/70">
+        <tbody className="divide-y divide-white/[0.05]">
           {positions.map((p) => {
             const entry = p.costSol / p.tokens;
             const value = p.tokens * p.lastPriceSol;
