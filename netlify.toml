@@ -8,6 +8,9 @@
   NODE_VERSION = "22"
   # Static export: no Next.js server functions needed.
   NETLIFY_NEXT_PLUGIN_SKIP = "true"
+  # These three are public by design (they ship in the browser bundle; RLS and the engine's sign-in check protect
+  # the data), so Netlify's secret scanner should not fail the build when it finds them in the output.
+  SECRETS_SCAN_OMIT_KEYS = "NEXT_PUBLIC_ENGINE_URL,NEXT_PUBLIC_SUPABASE_URL,NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,NEXT_PUBLIC_SUPABASE_ANON_KEY"
 
 [[headers]]
   for = "/*"

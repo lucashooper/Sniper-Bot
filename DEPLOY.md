@@ -61,7 +61,7 @@ If the volume is ever lost, redeploy with the same variables: the engine restore
 
 ## 3. Dashboard on Netlify
 
-1. Site configuration → Build & deploy → Build settings: **Base directory empty** (repo root), and clear any custom build command / publish directory so `netlify.toml` applies. Branch to deploy: the branch you want live.
+1. Site configuration → Build & deploy → Build settings: **Base directory empty** (repo root), and clear any custom build command / publish directory so `netlify.toml` applies. **Production branch** must be a branch that contains this setup (with `netlify.toml` at the root); the build log should say "Config file … netlify.toml", not "No config file was defined".
 2. Site configuration → **Environment variables**:
 
    | Variable | Value |
@@ -69,6 +69,8 @@ If the volume is ever lost, redeploy with the same variables: the engine restore
    | `NEXT_PUBLIC_ENGINE_URL` | `https://<your-railway-domain>` |
    | `NEXT_PUBLIC_SUPABASE_URL` | `https://wsgytasfhjxoamlrokwa.supabase.co` |
    | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | your `sb_publishable_…` key |
+
+   Leave **Contains secret values unticked** for all three: they are public by design and end up in the page's JavaScript. (`netlify.toml` also tells the secret scanner to skip them.)
 
    These are baked in at build time: after changing them, Deploys → Trigger deploy → **Clear cache and deploy site**.
 3. Never put `SUPABASE_SECRET_KEY`, `KEYSTORE_PASSPHRASE`, RPC keys or wallet keys on Netlify.
