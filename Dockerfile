@@ -20,8 +20,8 @@ COPY engine/package.json engine/
 COPY dashboard/package.json dashboard/
 RUN npm ci --workspace engine --include-workspace-root=false --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY --from=build /app/engine/dist engine/dist
-# Encrypted keystore, wallets, settings and ledger. Mount a persistent volume here; Supabase holds a backup.
-VOLUME /data
+# Encrypted keystore, wallets, settings and ledger live in /data: attach a persistent volume there (on Railway,
+# Service > Volumes; Railway rejects a VOLUME instruction). Supabase holds a backup.
 EXPOSE 8787
 # Runs as root because platform volumes (Railway, Fly) mount root-owned; the container itself is the boundary.
 CMD ["node", "engine/dist/index.js"]

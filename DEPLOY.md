@@ -35,7 +35,8 @@ What ends up in Supabase:
 
 ## 2. Engine on Railway
 
-1. railway.com → New Project → Deploy from GitHub repo → this repo and branch. `railway.json` tells it to build the root `Dockerfile` and health-check `/health`.
+1. railway.com → New Project → Deploy from GitHub repo → this repo, branch `main`. `railway.json` tells it to build the root `Dockerfile`, start `node engine/dist/index.js` and health-check `/health`.
+   Railway may detect the npm workspaces and create services named `@sniper/dashboard` / `@sniper/engine` with their own commands. Keep **one** service (rename it `engine`), delete any other (the dashboard lives on Netlify), and in its Settings leave **Root Directory**, **Custom Build Command** and **Custom Start Command** empty so `railway.json` applies.
 2. Service → Settings → **Region**: EU West (Amsterdam) or US East, close to a Jito block engine.
 3. Service → **Volumes** → add a volume mounted at **`/data`**. This is where the encrypted keystore lives.
 4. Service → **Variables**:
