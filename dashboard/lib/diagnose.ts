@@ -53,8 +53,8 @@ export async function diagnose(url: string, token?: string): Promise<Check[]> {
       "Engine responds",
       false,
       answered
-        ? `The host answers at ${parsed.host}, but not as the engine (no engine reply on /health). On Railway this means the domain points at the wrong port or the app is crashing: check Settings → Networking (the port must match "API listening on …" in the deploy logs) and the deploy logs. Old engine builds without this check also land here: redeploy the engine.`
-        : `Nothing answered at ${parsed.host} (DNS, TLS or the service is down). Check the domain under Railway → Settings → Networking and that the deployment is running.`,
+        ? `${parsed.host} answers, but not as the engine. On Railway ("Application failed to respond") the engine is crashing or the domain points at the wrong port: open the deploy logs. An "Engine failed to start: …" line names the missing variable; otherwise make Settings → Networking's port match "API listening on …".`
+        : `No usable answer from ${parsed.host}. If opening ${url}/health in a new tab shows Railway's "Application failed to respond", the engine is crashing: open Railway's deploy logs, where an "Engine failed to start: …" line names the missing variable. If the page doesn't load at all, check the domain under Railway → Settings → Networking.`,
     );
     return out;
   }
