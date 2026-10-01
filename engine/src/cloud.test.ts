@@ -89,3 +89,11 @@ test("rejections say why", async () => {
   assert.match(String((await checkOwnerToken("a.forged2.jwt") as { reason: string }).reason), /invalid or expired/);
   assert.match(String((await checkOwnerToken("") as { reason: string }).reason), /No sign-in token/);
 });
+
+test("legacy JWT keys: service_role is sent as a Bearer too, anon is refused with the fix", async () => {
+  const { legacyKeyRole } = await import("./cloud.js");
+  const jwt = (role: string) => `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ role })).toString("base64url")}.sig`;
+  assert.equal(legacyKeyRole(jwt("service_role")), "service_role");
+  assert.equal(legacyKeyRole(jwt("anon")), "anon");
+  assert.equal(legacyKeyRole("sb_secret_abc"), null);
+});
