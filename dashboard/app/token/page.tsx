@@ -7,10 +7,12 @@ import { ArrowLeft, Crown, ExternalLink, Flame, Search, ShieldAlert, Users, Zap 
 import { api, useEngine, type ApiError } from "@/lib/engine";
 import { takePrefetched } from "@/lib/token-cache";
 import { accountUrl, coinPage, compact, pct, short, solscan, time } from "@/lib/format";
-import type { Launch, Position, SellAllResult, TapeTrade, TokenDetail, Trade } from "@/lib/types";
+import type { GroupTradeResult, Launch, Position, SellAllResult, TapeTrade, TokenDetail, Trade } from "@/lib/types";
 import { Avatar, CopyCa, CurveBar, Socials, age, defaultWalletId, money, useNow } from "@/components/token-feed";
 import { INTERVALS, TokenChart, type ChartUnit } from "@/components/token-chart";
-import { Badge, Button, Card, Empty, cx, useToast } from "@/components/ui";
+import { Badge, Button, Card, Empty, cx } from "@/components/ui";
+import { buyToast, sellToast, useTradeToasts } from "@/components/trade-toasts";
+import { PRESET_PREFIX, WalletOptions } from "@/components/wallet-picker";
 import { DevChip } from "@/components/devs";
 
 export default function TokenPage() {
@@ -164,7 +166,8 @@ function TokenView({ mint }: { mint: string }) {
   const l = tracked?.launch;
   const symbol = l?.symbol ?? positions[0]?.symbol ?? short(mint);
   const name = l?.name ?? positions[0]?.name ?? "";
-  const lastPrice = l?.priceSol ?? positions[0]?.lastPriceSol ?? 0;
+  // The newest price: the last trade pushed for this coin, else the feed's copy, else what the position last saw.
+  const lastPrice = trades[trades.length - 1]?.priceSol ?? l?.priceSol ?? positions[0]?.lastPriceSol ?? 0;
   const simulated = l?.simulated ?? positions[0]?.mode === "sim";
 
   // Change over the last 5 minutes of trades, like Axiom's header.
@@ -219,6 +222,7 @@ function TokenView({ mint }: { mint: string }) {
             <HeadStat label="ATH" value={value(l.athMarketCapSol)} />
           </div>
         )}
+        {positions.length > 0 && <HeadPosition positions={positions} priceSol={lastPrice} solUsd={solUsd} />}
       </div>
 
       {/* On phones the trade panel sits right under the chart; on wide screens it is the right-hand column. */}
@@ -227,14 +231,30 @@ function TokenView({ mint }: { mint: string }) {
           <ChartCard mint={mint} tracked={tracked} trades={trades} fills={fills} solUsd={solUsd} simulated={simulated} />
         </div>
         <div className="space-y-3 xl:row-span-2">
-          <TradePanel mint={mint} symbol={symbol} priceSol={lastPrice} positions={positions} migrated={!!l?.migrated} />
-          {positions.length > 0 && <PositionCard positions={positions} value={value} />}
+          <TradePanel mint={mint} symbol={symbol} priceSol={lastPrice} positions={positions} migrated={!!l?.migrated} solUsd={solUsd} />
           {tracked && <TokenInfo d={tracked} />}
           {error && <p className="text-xs text-rose-300">{error}</p>}
         </div>
         <div className="min-w-0 xl:col-start-1">
           <BottomTabs tracked={tracked} trades={trades} fills={fills} value={value} />
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** Your position in the top bar: what it is worth now and the unrealized PnL, live. */
+function HeadPosition({ positions, priceSol, solUsd }: { positions: Position[]; priceSol: number; solUsd: number | null }) {
+  const s = positionStats(positions, priceSol);
+  const good = s.pnl >= 0;
+  return (
+    <div className={cx("ml-auto rounded-lg border px-3 py-1.5", good ? "border-emerald-500/20 bg-emerald-500/[0.06]" : "border-rose-500/20 bg-rose-500/[0.06]")}>
+      <div className="text-[11px] text-neutral-500">Your position{positions.length > 1 ? ` · ${positions.length} wallets` : ""}</div>
+      <div className="flex items-baseline gap-2 tabular-nums">
+        <span className="text-[13px] font-semibold text-neutral-100">{solUsd ? money(s.worth * solUsd) : `${s.worth.toFixed(4)} SOL`}</span>
+        <span className={cx("text-[12px] font-semibold", good ? "text-emerald-400" : "text-rose-400")}>
+          {pct(s.pnlPct, 2)} ({solUsd ? `${good ? "+" : "-"}$${Math.abs(s.pnl * solUsd).toFixed(2)}` : `${good ? "+" : ""}${s.pnl.toFixed(4)} SOL`})
+        </span>
       </div>
     </div>
   );
@@ -458,50 +478,143 @@ function Addr({ a, dev, sig }: { a: string; dev?: boolean; sig?: string }) {
 
 /* ---------------------------------------------------------------- trade panel */
 
-function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: string; symbol: string; priceSol: number; positions: Position[]; migrated: boolean }) {
+/** Totals for your open positions in this coin, valued at the newest trade price (moves on every pushed trade). */
+function positionStats(positions: Position[], priceSol: number) {
+  const tokens = positions.reduce((s, p) => s + p.tokens, 0);
+  const cost = positions.reduce((s, p) => s + p.costSol, 0);
+  const worth = positions.reduce((s, p) => s + p.tokens * (priceSol || p.lastPriceSol), 0);
+  const realized = positions.reduce((s, p) => s + p.realizedPnlSol, 0);
+  const pnl = worth - cost;
+  return { tokens, cost, worth, realized, pnl, pnlPct: cost > 0 ? (pnl / cost) * 100 : 0 };
+}
+
+type SellUnit = "tokens" | "sol";
+type FailedLeg = { wallet: string; error: string; solscan?: string };
+
+function TradePanel({ mint, symbol, priceSol, positions, migrated, solUsd }: { mint: string; symbol: string; priceSol: number; positions: Position[]; migrated: boolean; solUsd: number | null }) {
   const { state } = useEngine();
-  const toast = useToast();
+  const toast = useTradeToasts();
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [amount, setAmount] = useState("");
   const [walletId, setWalletId] = useState("");
+  // Sell amount: what is typed (tokens or SOL), or the exact percentage of a pill that filled it.
+  const [sellText, setSellText] = useState("");
+  const [sellUnit, setSellUnit] = useState<SellUnit>("tokens");
+  const [sellPct, setSellPct] = useState<number | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [since, setSince] = useState(0);
-  const [lastError, setLastError] = useState<{ message: string; solscan?: string } | null>(null);
+  const [lastError, setLastError] = useState<{ message: string; solscan?: string; legs?: FailedLeg[] } | null>(null);
   if (!state) return null;
   const live = state.status.live;
   const presets = state.settings.quickBuyPresets ?? [0.1, 0.5, 1];
   const wallets = state.wallets.filter((w) => w.active);
-  const chosen = walletId || defaultWalletId(state);
+  const picked = walletId || defaultWalletId(state);
+  const preset = picked.startsWith(PRESET_PREFIX) ? (state.groups ?? []).find((g) => g.id === picked.slice(PRESET_PREFIX.length)) : undefined;
+  // A preset that was deleted meanwhile falls back to the default wallet.
+  const chosen = picked.startsWith(PRESET_PREFIX) && !preset ? defaultWalletId(state) : picked;
+  const presetWallets = preset ? wallets.filter((w) => preset.walletIds.includes(w.id)) : [];
   const sol = Number(amount);
-  const walletSol = chosen ? state.balances[chosen]?.sol : undefined;
-  // Sells act on your position in this coin from the chosen wallet (or the only one you have).
-  const pos = positions.find((p) => p.walletId === (chosen || "paper")) ?? (positions.length === 1 ? positions[0] : undefined);
+  const walletSol = preset ? presetWallets.reduce((s, w) => s + (state.balances[w.id]?.sol ?? 0), 0) : chosen ? state.balances[chosen]?.sol : undefined;
+  // What a sell acts on: every holding wallet of the preset, or the chosen wallet's position (or the only one you have).
+  const single = preset ? undefined : (positions.find((p) => p.walletId === (chosen || "paper")) ?? (positions.length === 1 ? positions[0] : undefined));
+  const sellFrom = preset ? positions.filter((p) => preset.walletIds.includes(p.walletId)) : single ? [single] : [];
+  const holdTokens = sellFrom.reduce((s, p) => s + p.tokens, 0);
+  const holdSol = holdTokens * priceSol;
+
+  // The sell as a percentage of what is held: exact for a pill, worked out from the typed tokens or SOL otherwise.
+  const typed = Number(sellText);
+  const rawPct = sellPct ?? (typed > 0 && holdTokens > 0 ? (sellUnit === "tokens" ? typed / holdTokens : priceSol > 0 ? typed / holdSol : 0) * 100 : 0);
+  const tooMuch = sellPct === null && rawPct > 100.01;
+  // Within a hair of everything means everything, so the token account is closed and its rent comes back.
+  const pctToSell = rawPct >= 99.99 ? 100 : Math.round(rawPct * 100) / 100;
+  const sellLabel =
+    sellPct !== null
+      ? `SELL ${sellPct}% OF ${symbol}`
+      : typed > 0
+        ? sellUnit === "tokens"
+          ? `SELL ${compact(typed)} ${symbol}`
+          : `SELL ${+typed.toFixed(4)} SOL OF ${symbol}`
+        : `SELL ${symbol}`;
+
+  const fillPct = (p: number) => {
+    setSellPct(p);
+    const tokens = (holdTokens * p) / 100;
+    setSellText(sellUnit === "tokens" ? String(+tokens.toPrecision(6)) : String(+(tokens * priceSol).toFixed(6)));
+  };
+  const switchUnit = (u: SellUnit) => {
+    if (u === sellUnit) return;
+    // Keep the same amount, shown in the other unit.
+    if (typed > 0 && priceSol > 0) setSellText(String(u === "sol" ? +(typed * priceSol).toFixed(6) : +(typed / priceSol).toPrecision(6)));
+    setSellUnit(u);
+  };
+
+  /** Turns a preset result into per-wallet failures for the box under the button and the console. */
+  const failures = (r: GroupTradeResult): FailedLeg[] => {
+    const bad = r.results.filter((x) => !x.ok);
+    if (bad.length) {
+      console.groupCollapsed(`[preset] ${r.side} ${bad.length} of ${r.results.length} wallet(s) failed (${r.sendMode})`);
+      console.table(bad.map((b) => ({ wallet: b.wallet, error: b.error, stage: b.details?.stage })));
+      for (const b of bad) {
+        console.info(b.wallet, b.details ?? {});
+        if (Array.isArray(b.details?.steps)) console.table(b.details.steps);
+        if (Array.isArray(b.details?.logs)) console.info("program logs\n" + (b.details.logs as string[]).join("\n"));
+      }
+      console.groupEnd();
+    }
+    return bad.map((b) => ({ wallet: b.wallet, error: b.error ?? "failed", solscan: typeof b.details?.solscan === "string" ? b.details.solscan : undefined }));
+  };
+  const showError = (e: unknown) => {
+    const err = e as ApiError;
+    const link = err.details?.solscan;
+    setLastError({ message: err.message, solscan: typeof link === "string" ? link : undefined });
+    toast({ tone: "err", title: `${side === "buy" ? "Buy" : "Sell"} of $${symbol} failed`, sub: err.message, links: typeof link === "string" ? [{ href: link, label: "View transaction" }] : undefined });
+  };
 
   const buy = async (n: number) => {
-    if (!(n > 0)) return toast.show("Enter an amount in SOL", "err");
+    if (!(n > 0)) return setLastError({ message: "Enter an amount in SOL" });
     setBusy("buy");
     setSince(Date.now());
     setLastError(null);
     try {
-      await api("/api/snipe", { method: "POST", body: { mint, walletId: chosen, sol: n } });
-      toast.show(`${live ? "Bought" : "Paper bought"} ${n} SOL of ${symbol}`);
+      if (preset) {
+        const r = await api<GroupTradeResult>(`/api/presets/${encodeURIComponent(preset.id)}/buy`, { method: "POST", body: { mint, sol: n } });
+        const trades = r.results.flatMap((x) => (x.trade ? [x.trade] : []));
+        const legs = failures(r);
+        if (trades.length) toast(presetBuyToast(trades, n, symbol, solUsd, legs.length, r.sendMode, r.bundles));
+        if (legs.length) setLastError({ message: `${legs.length} of ${r.results.length} wallets did not buy:`, legs });
+      } else {
+        const t = await api<Trade>("/api/snipe", { method: "POST", body: { mint, walletId: chosen, sol: n } });
+        toast(buyToast(t, solUsd));
+      }
     } catch (e) {
-      toast.show((e as Error).message, "err");
-      // Stays under the button after the toast fades, with the transaction link when one was sent.
-      const link = (e as ApiError).details?.solscan;
-      setLastError({ message: (e as Error).message, solscan: typeof link === "string" ? link : undefined });
+      showError(e);
     } finally {
       setBusy(null);
     }
   };
-  const sell = async (p: number) => {
-    if (!pos) return;
-    setBusy(`sell${p}`);
+
+  const sell = async () => {
+    if (!sellFrom.length || !(pctToSell > 0) || tooMuch) return;
+    setBusy("sell");
+    setSince(Date.now());
+    setLastError(null);
+    const label = `${+pctToSell.toFixed(2)}%`;
     try {
-      await api(`/api/positions/${encodeURIComponent(pos.key)}/sell`, { method: "POST", body: { pct: p } });
-      toast.show(p >= 100 ? `Sold all ${symbol}` : `Sold ${p}% of ${symbol}`);
+      if (preset) {
+        const r = await api<GroupTradeResult>(`/api/presets/${encodeURIComponent(preset.id)}/sell`, { method: "POST", body: { mint, pct: pctToSell } });
+        const trades = r.results.flatMap((x) => (x.trade ? [x.trade] : []));
+        const legs = failures(r);
+        if (trades.length) toast(sellToast(trades, label, symbol, solUsd, legs.length));
+        if (legs.length) setLastError({ message: `${legs.length} of ${r.results.length} wallets did not sell:`, legs });
+      } else {
+        const t = await api<Trade | null>(`/api/positions/${encodeURIComponent(single!.key)}/sell`, { method: "POST", body: { pct: pctToSell } });
+        if (!t) throw new Error(`A sell of ${symbol} from ${single!.walletName} is already in flight; wait for it to finish.`);
+        toast(sellToast([t], label, symbol, solUsd));
+      }
+      setSellText("");
+      setSellPct(null);
     } catch (e) {
-      toast.show((e as Error).message, "err");
+      showError(e);
     } finally {
       setBusy(null);
     }
@@ -509,42 +622,58 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
 
   const sellEverywhere = async () => {
     setBusy("all");
+    setLastError(null);
     try {
       const r = await api<SellAllResult>("/api/positions/sell-all", { method: "POST", body: { mint } });
-      if (r.failed) toast.show(`Sold ${r.sold}, ${r.failed} failed: ${r.results.find((x) => !x.ok)?.error ?? "see the log"}`, "err");
-      else toast.show(`Sold ${symbol} from ${r.sold} wallets`);
+      const bad = r.results.filter((x) => !x.ok);
+      if (bad.length) {
+        console.table(bad);
+        setLastError({ message: `${bad.length} of ${r.results.length} wallets did not sell:`, legs: bad.map((b) => ({ wallet: b.wallet, error: b.error ?? "failed" })) });
+      }
+      if (r.sold) toast({ tone: "sell", title: `🔴 SOLD 100% of $${symbol} from ${r.sold} wallet${r.sold > 1 ? "s" : ""}`, sub: `Received ${r.results.reduce((s, x) => s + (x.solReceived ?? 0), 0).toFixed(4)} SOL. Realized PnL is on the PnL page.` });
     } catch (e) {
-      toast.show((e as Error).message, "err");
+      showError(e);
     } finally {
       setBusy(null);
     }
   };
 
+  const holding = positions.length > 0;
   return (
     <Card>
-      {toast.node}
       <div className="p-3">
         <div className="grid grid-cols-2 rounded-lg bg-white/[0.03] p-0.5">
           <button onClick={() => setSide("buy")} className={cx("rounded-md py-1.5 text-[13px] font-semibold transition", side === "buy" ? "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/25" : "text-neutral-500 hover:text-neutral-200")}>Buy</button>
           <button onClick={() => setSide("sell")} className={cx("rounded-md py-1.5 text-[13px] font-semibold transition", side === "sell" ? "bg-rose-500/15 text-rose-300 ring-1 ring-rose-400/25" : "text-neutral-500 hover:text-neutral-200")}>Sell</button>
         </div>
 
+        {holding && <ActivePosition positions={positions} priceSol={priceSol} solUsd={solUsd} />}
+
         <label className="mt-3 flex items-center justify-between gap-2 text-xs text-neutral-500">
           Wallet
-          <select value={chosen} onChange={(e) => setWalletId(e.target.value)} className="h-8 max-w-[210px] flex-1 rounded-md border border-white/[0.06] bg-ink-900 px-2 text-xs text-neutral-200 outline-none transition focus:border-white/[0.14]">
-            {!live && <option value="">Paper wallet</option>}
+          <select
+            value={chosen}
+            onChange={(e) => {
+              setWalletId(e.target.value);
+              setSellText("");
+              setSellPct(null);
+            }}
+            className="h-8 max-w-[230px] flex-1 rounded-md border border-white/[0.06] bg-ink-900 px-2 text-xs text-neutral-200 outline-none transition focus:border-white/[0.14]"
+          >
             {live && !wallets.length && <option value="">No active wallet</option>}
-            {wallets.map((w) => (
-              <option key={w.id} value={w.id}>{w.name} · {short(w.publicKey)}</option>
-            ))}
+            <WalletOptions paper={!live} presets />
           </select>
         </label>
-        {live && walletSol !== undefined && <div className="mt-1 text-right font-mono text-[11px] text-neutral-500">{walletSol.toFixed(4)} SOL available</div>}
+        {walletSol !== undefined && live && (
+          <div className="mt-1 text-right font-mono text-[11px] text-neutral-500">
+            {walletSol.toFixed(4)} SOL {preset ? `across ${presetWallets.length} wallets` : "available"}
+          </div>
+        )}
 
         {side === "buy" ? (
           <div className="mt-3 space-y-3">
             <div className="flex items-center rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 transition focus-within:border-emerald-400/40">
-              <span className="text-xs text-neutral-500">Amount</span>
+              <span className="text-xs text-neutral-500">{preset ? "Each wallet" : "Amount"}</span>
               <input
                 type="number"
                 min={0}
@@ -552,7 +681,7 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
                 inputMode="decimal"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && void buy(sol)}
+                onKeyDown={(e) => e.key === "Enter" && busy === null && void buy(sol)}
                 placeholder="0.0"
                 className="h-11 min-w-0 flex-1 bg-transparent px-2 text-right text-base font-medium outline-none"
               />
@@ -570,72 +699,143 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
               ))}
             </div>
             <div className="flex justify-between text-[11px] text-neutral-500">
-              <span>≈ {priceSol > 0 && sol > 0 ? compact(sol / priceSol) : "0"} {symbol}</span>
+              <span>≈ {priceSol > 0 && sol > 0 ? compact((sol / priceSol) * (preset ? presetWallets.length : 1)) : "0"} {symbol}</span>
               <span>
                 slip {state.settings.slippagePct}% · tip {state.settings.jitoTipSol} SOL · {state.settings.sendMode === "protected" ? "protected" : "fast"}
               </span>
             </div>
-            <Button variant="success" size="lg" className="w-full font-semibold" disabled={busy !== null || !(sol > 0)} onClick={() => void buy(sol)}>
-              <Zap size={15} /> {busy === "buy" ? <>{live ? "Sending" : "Buying"}… <Elapsed since={since} /></> : `Buy ${symbol}`}
+            <Button variant="success" size="lg" className="w-full font-semibold" disabled={busy !== null || !(sol > 0) || (!!preset && !presetWallets.length)} onClick={() => void buy(sol)}>
+              <Zap size={15} />{" "}
+              {busy === "buy" ? (
+                <>
+                  {live ? "Sending" : "Buying"}… <Elapsed since={since} />
+                </>
+              ) : preset ? (
+                `Buy ${symbol} × ${presetWallets.length} wallets`
+              ) : (
+                `Buy ${symbol}`
+              )}
             </Button>
-            {lastError && (
-              <p className="rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-2.5 py-2 text-[11px] leading-relaxed text-rose-300">
-                {lastError.message}
-                {lastError.solscan && (
-                  <>
-                    {" "}
-                    <a href={lastError.solscan} target="_blank" rel="noreferrer" className="underline">
-                      View transaction
-                    </a>
-                  </>
-                )}{" "}
-                <span className="text-rose-300/60">Full detail in the browser console.</span>
+            {preset && sol > 0 && (
+              <p className="text-[11px] text-neutral-500">
+                {sol} SOL from each of {presetWallets.length} wallets ({+(sol * presetWallets.length).toFixed(4)} SOL in total), each paying its own fees and tip.{" "}
+                {live && state.settings.sendMode === "protected"
+                  ? `Goes out as ${Math.ceil(presetWallets.length / 5)} Jito bundle${presetWallets.length > 5 ? "s" : ""} (5 wallets max each).`
+                  : live
+                    ? "Each wallet's buy goes out at once through the fast route."
+                    : ""}
               </p>
             )}
             {migrated && <p className="text-[11px] text-neutral-500">Graduated coin: the buy routes through its PumpSwap pool.</p>}
           </div>
         ) : (
           <div className="mt-3 space-y-3">
-            {pos ? (
+            {sellFrom.length ? (
               <>
-                <div className="flex justify-between rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-xs">
-                  <span className="text-neutral-500">Holding · {pos.walletName}</span>
-                  <span className="text-neutral-200">
-                    {compact(pos.tokens)} {symbol} · {(pos.tokens * pos.lastPriceSol).toFixed(4)} SOL
+                <div className="flex justify-between text-[11px] text-neutral-500">
+                  <span>Holding{preset ? ` · ${sellFrom.length} of ${presetWallets.length} wallets` : ` · ${single!.walletName}`}</span>
+                  <span className="font-mono text-neutral-300">
+                    {compact(holdTokens)} {symbol} · {holdSol.toFixed(4)} SOL
                   </span>
+                </div>
+                <div className={cx("flex items-center rounded-lg border bg-white/[0.02] px-3 transition", tooMuch ? "border-rose-500/50" : "border-white/[0.06] focus-within:border-rose-400/40")}>
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    inputMode="decimal"
+                    value={sellText}
+                    onChange={(e) => {
+                      setSellText(e.target.value);
+                      setSellPct(null);
+                    }}
+                    onKeyDown={(e) => e.key === "Enter" && busy === null && void sell()}
+                    placeholder="0"
+                    className="h-11 min-w-0 flex-1 bg-transparent pr-2 text-base font-medium outline-none"
+                  />
+                  <div className="flex rounded-md bg-white/[0.04] p-0.5 text-[11px]">
+                    {(["tokens", "sol"] as const).map((u) => (
+                      <button key={u} onClick={() => switchUnit(u)} className={cx("rounded px-2 py-1 font-medium transition", sellUnit === u ? "bg-white/[0.1] text-white" : "text-neutral-500 hover:text-neutral-200")}>
+                        {u === "tokens" ? symbol.slice(0, 8) : "SOL"}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div className="grid grid-cols-4 gap-1.5">
                   {[25, 50, 75, 100].map((p) => (
                     <button
                       key={p}
-                      disabled={busy !== null}
-                      onClick={() => void sell(p)}
+                      onClick={() => fillPct(p)}
                       className={cx(
-                        "h-9 rounded-md text-xs font-semibold transition active:scale-95 disabled:opacity-40",
-                        p === 100 ? "bg-rose-500/90 text-white hover:bg-rose-500" : "border border-rose-400/20 bg-rose-500/[0.07] text-rose-200 hover:bg-rose-500/15",
+                        "h-8 rounded-md border text-xs font-semibold transition",
+                        sellPct === p ? "border-rose-400/50 bg-rose-500/15 text-rose-100" : "border-white/[0.06] bg-white/[0.03] text-neutral-300 hover:border-rose-400/25 hover:bg-rose-500/[0.07]",
                       )}
                     >
-                      {busy === `sell${p}` ? "…" : `${p}%`}
+                      {p}%
                     </button>
                   ))}
                 </div>
-                {positions.length > 1 && (
-                  <Button variant="danger" size="sm" className="w-full" disabled={busy !== null} onClick={() => void sellEverywhere()}>
-                    <Flame size={13} /> {busy === "all" ? "Selling…" : `Sell all from ${positions.length} wallets`}
-                  </Button>
-                )}
-                <p className="text-[11px] text-neutral-500">Sells go out at market with your slippage, priority fee and Jito tip. Take-profit and stop-loss rules keep running on what is left.</p>
+                <div className="flex justify-between text-[11px] text-neutral-500">
+                  <span>{tooMuch ? <span className="text-rose-400">More than you hold</span> : pctToSell > 0 ? `${+pctToSell.toFixed(2)}% of holding` : "Pick a percentage or type an amount"}</span>
+                  <span>≈ {((holdSol * Math.min(pctToSell, 100)) / 100).toFixed(4)} SOL</span>
+                </div>
+                <button
+                  disabled={busy !== null || !(pctToSell > 0) || tooMuch}
+                  onClick={() => void sell()}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-rose-600 py-3 font-semibold text-white shadow-lg shadow-rose-900/20 transition hover:bg-rose-500 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-40"
+                >
+                  {busy === "sell" ? (
+                    <>
+                      {live ? "Sending" : "Selling"}… <Elapsed since={since} />
+                    </>
+                  ) : (
+                    <>
+                      {sellLabel}
+                      {preset ? ` × ${sellFrom.length}` : ""}
+                    </>
+                  )}
+                </button>
+                <p className="text-[11px] text-neutral-500">
+                  {preset ? `Sells the same share from each of the ${sellFrom.length} wallets holding it. ` : ""}Sells go out at market with your slippage, priority fee and tip. Take-profit and stop-loss rules keep running on what is left.
+                </p>
               </>
             ) : (
               <div className="rounded-xl border border-dashed border-white/[0.07] px-3 py-6 text-center text-xs text-neutral-500">
-                {positions.length ? "No position from this wallet; pick the wallet that holds it." : `You hold no ${symbol}.`}
+                {positions.length ? (preset ? `No wallet in ${preset.name} holds ${symbol}.` : "No position from this wallet; pick the wallet or preset that holds it.") : `You hold no ${symbol}.`}
               </div>
             )}
-            {!pos && positions.length > 1 && (
+            {positions.length > 1 && (
               <Button variant="danger" size="sm" className="w-full" disabled={busy !== null} onClick={() => void sellEverywhere()}>
                 <Flame size={13} /> {busy === "all" ? "Selling…" : `Sell all from ${positions.length} wallets`}
               </Button>
             )}
+          </div>
+        )}
+        {lastError && (
+          <div className="mt-3 rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-2.5 py-2 text-[11px] leading-relaxed text-rose-300">
+            {lastError.message}
+            {lastError.solscan && (
+              <>
+                {" "}
+                <a href={lastError.solscan} target="_blank" rel="noreferrer" className="underline">
+                  View transaction
+                </a>
+              </>
+            )}
+            {lastError.legs?.map((l) => (
+              <div key={l.wallet} className="mt-1">
+                <span className="font-semibold">{l.wallet}:</span> {l.error}
+                {l.solscan && (
+                  <>
+                    {" "}
+                    <a href={l.solscan} target="_blank" rel="noreferrer" className="underline">
+                      tx
+                    </a>
+                  </>
+                )}
+              </div>
+            ))}{" "}
+            <span className="text-rose-300/60">Full detail in the browser console.</span>
           </div>
         )}
       </div>
@@ -643,28 +843,54 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
   );
 }
 
-function PositionCard({ positions, value }: { positions: Position[]; value: (sol: number) => string }) {
-  const cost = positions.reduce((s, p) => s + p.costSol, 0);
-  const worth = positions.reduce((s, p) => s + p.tokens * p.lastPriceSol, 0);
-  const realized = positions.reduce((s, p) => s + p.realizedPnlSol, 0);
-  const pnl = worth - cost + realized;
-  return (
-    <Card>
-      <div className="grid grid-cols-3 divide-x divide-white/[0.05] text-center">
-        <Cell label="Invested" value={`${cost.toFixed(3)}`} sub="SOL" />
-        <Cell label="Holding" value={`${worth.toFixed(3)}`} sub={value(worth)} />
-        <Cell label="PnL" value={`${pnl >= 0 ? "+" : ""}${pnl.toFixed(3)}`} sub={cost ? pct((pnl / cost) * 100) : ""} tone={pnl >= 0 ? "good" : "bad"} />
-      </div>
-    </Card>
-  );
+/** "BOUGHT 0.02 SOL × 3 wallets of $TICKER": one toast for a whole preset buy. */
+function presetBuyToast(trades: Trade[], perWallet: number, symbol: string, solUsd: number | null, failed: number, mode: string, bundles: number) {
+  const spent = trades.reduce((s, t) => s + t.solAmount, 0);
+  const avgPrice = trades.reduce((s, t) => s + t.solAmount, 0) / Math.max(1e-12, trades.reduce((s, t) => s + t.tokenAmount, 0));
+  const t0 = buyToast({ ...trades[0], solAmount: perWallet, priceSol: avgPrice, symbol }, solUsd);
+  return {
+    ...t0,
+    title: `🟢 ${trades.every((t) => t.mode === "sim") ? "PAPER " : ""}BOUGHT ${perWallet} SOL × ${trades.length} wallets of $${symbol}`,
+    sub: `${t0.sub!.split(" · ")[0]} · ${spent.toFixed(4)} SOL in total${mode === "protected" ? ` · ${bundles} Jito bundle${bundles > 1 ? "s" : ""}` : ""}${failed ? ` · ${failed} wallet${failed > 1 ? "s" : ""} failed` : ""}`,
+    links: trades.filter((t) => t.signature).map((t) => ({ href: solscan(t.signature!), label: `${t.walletName} ${short(t.signature!)}` })),
+  };
 }
 
-function Cell({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "good" | "bad" }) {
+/** Bought value, current value and unrealized PnL of what you hold, re-priced on every trade the engine pushes. */
+function ActivePosition({ positions, priceSol, solUsd }: { positions: Position[]; priceSol: number; solUsd: number | null }) {
+  const s = positionStats(positions, priceSol);
+  const good = s.pnl >= 0;
+  const usd = (n: number) => (solUsd ? money(n * solUsd) : "");
   return (
-    <div className="px-2 py-3">
-      <div className="text-[11px] text-neutral-500">{label}</div>
-      <div className={cx("mt-0.5 text-sm font-semibold", tone === "good" ? "text-emerald-400" : tone === "bad" ? "text-rose-400" : "text-neutral-100")}>{value}</div>
-      {sub && <div className="text-[10px] text-neutral-500">{sub}</div>}
+    <div className={cx("mt-3 rounded-lg border px-3 py-2.5", good ? "border-emerald-500/15 bg-emerald-500/[0.04]" : "border-rose-500/15 bg-rose-500/[0.04]")}>
+      <div className="flex items-center justify-between text-[11px]">
+        <span className="font-medium text-neutral-400">Active position{positions.length > 1 ? ` · ${positions.length} wallets` : ""}</span>
+        <span key={s.pnlPct.toFixed(2)} className={cx("font-semibold tabular-nums", good ? "tick-up text-emerald-400" : "tick-down text-rose-400")}>
+          {pct(s.pnlPct, 2)}
+        </span>
+      </div>
+      <div className="mt-1.5 grid grid-cols-3 gap-2 tabular-nums">
+        <div>
+          <div className="text-[10px] text-neutral-500">Bought</div>
+          <div className="text-[13px] font-semibold text-neutral-100">{s.cost.toFixed(4)}</div>
+          <div className="text-[10px] text-neutral-500">{usd(s.cost) || "SOL"}</div>
+        </div>
+        <div>
+          <div className="text-[10px] text-neutral-500">Current</div>
+          <div className="text-[13px] font-semibold text-neutral-100">{s.worth.toFixed(4)}</div>
+          <div className="text-[10px] text-neutral-500">{usd(s.worth) || "SOL"}</div>
+        </div>
+        <div>
+          <div className="text-[10px] text-neutral-500">Unrealized</div>
+          <div className={cx("text-[13px] font-semibold", good ? "text-emerald-400" : "text-rose-400")}>{`${good ? "+" : ""}${s.pnl.toFixed(4)}`}</div>
+          <div className={cx("text-[10px]", good ? "text-emerald-400/70" : "text-rose-400/70")}>{solUsd ? `${good ? "+" : "-"}$${Math.abs(s.pnl * solUsd).toFixed(2)}` : "SOL"}</div>
+        </div>
+      </div>
+      {Math.abs(s.realized) > 1e-9 && (
+        <div className="mt-1.5 text-[10px] text-neutral-500">
+          Realized so far <span className={s.realized >= 0 ? "text-emerald-400" : "text-rose-400"}>{`${s.realized >= 0 ? "+" : ""}${s.realized.toFixed(4)} SOL`}</span>
+        </div>
+      )}
     </div>
   );
 }

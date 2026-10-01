@@ -33,8 +33,14 @@ export function usePickedWallet(): [string, (id: string) => void] {
   return [valid ? picked : "", set];
 }
 
-/** <option>s for a wallet <select>, grouped by wallet group, with each wallet's SOL balance when known. */
-export function WalletOptions({ paper }: { paper: boolean }) {
+/** Select value for "every wallet of this preset". Wallet ids never start with it. */
+export const PRESET_PREFIX = "preset:";
+
+/**
+ * <option>s for a wallet <select>, grouped by wallet group (with its wallet count), with each wallet's SOL balance when
+ * known. With `presets`, each preset is also offered as one choice that trades from all of its wallets at once.
+ */
+export function WalletOptions({ paper, presets }: { paper: boolean; presets?: boolean }) {
   const { state } = useEngine();
   if (!state) return null;
   const active = state.wallets.filter((w) => w.active);
@@ -48,8 +54,20 @@ export function WalletOptions({ paper }: { paper: boolean }) {
   return (
     <>
       {paper && <option value="">Paper wallet</option>}
+      {presets && groups.length > 0 && (
+        <optgroup label="Presets: trade from every wallet">
+          {groups.map((g) => {
+            const sol = g.members.reduce((s, w) => s + (state.balances[w.id]?.sol ?? 0), 0);
+            return (
+              <option key={g.id} value={`${PRESET_PREFIX}${g.id}`}>
+                {g.name} [{g.members.length} wallet{g.members.length === 1 ? "" : "s"}]{sol > 0 ? ` · ${sol.toFixed(3)} SOL` : ""}
+              </option>
+            );
+          })}
+        </optgroup>
+      )}
       {groups.map((g) => (
-        <optgroup key={g.id} label={g.name}>
+        <optgroup key={g.id} label={`${g.name} [${g.members.length} wallet${g.members.length === 1 ? "" : "s"}]`}>
           {g.members.map((w) => (
             // A wallet in several groups is listed under each; the key keeps React happy, the value is the same.
             <option key={`${g.id}:${w.id}`} value={w.id}>{label(w)}</option>

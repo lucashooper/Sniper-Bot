@@ -100,6 +100,16 @@ export interface SellAllResult {
   results: { wallet: string; symbol: string; ok: boolean; solReceived?: number; error?: string }[];
 }
 
+/** POST /api/presets/:id/buy and /sell: one order across every wallet of a preset. */
+export interface GroupTradeResult {
+  side: "buy" | "sell";
+  sendMode: "sim" | "fast" | "protected";
+  bundles: number;
+  ok: number;
+  failed: number;
+  results: { walletId: string; wallet: string; ok: boolean; trade?: Trade; error?: string; details?: Record<string, unknown> }[];
+}
+
 export interface WalletBalance {
   sol: number;
   tokens: { mint: string; amount: number; program: string }[];
@@ -220,6 +230,7 @@ export interface Trade {
   mode: "sim" | "live";
   side: "buy" | "sell";
   reason: string;
+  walletId: string;
   walletName: string;
   mint: string;
   symbol: string;
@@ -233,6 +244,8 @@ export interface Trade {
   realizedPnlSol: number;
   signature?: string;
   bundleId?: string;
+  /** Live trades on newer engines: the slot the transaction landed in. */
+  slot?: number;
 }
 
 export interface LogLine {
