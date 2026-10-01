@@ -35,9 +35,9 @@ export default function PnlPage() {
           <p className="mt-1 text-sm text-neutral-400">Every fill, Jito tip and fee is on the ledger. Costs include tips and fees, so PnL is what actually hit your wallet.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <div className="flex rounded-xl border border-neutral-800 bg-ink-900 p-1">
+          <div className="flex rounded-xl border border-white/[0.07] bg-ink-900 p-1">
             {(["all", "sim", "live"] as Mode[]).map((x) => (
-              <button key={x} onClick={() => setMode(x)} className={cx("rounded-lg px-3 py-1.5 text-xs font-medium capitalize", mode === x ? "bg-neutral-800 text-white" : "text-neutral-500")}>
+              <button key={x} onClick={() => setMode(x)} className={cx("rounded-lg px-3 py-1.5 text-xs font-medium capitalize", mode === x ? "bg-white/[0.08] text-white" : "text-neutral-500")}>
                 {x}
               </button>
             ))}
@@ -71,13 +71,13 @@ export default function PnlPage() {
       <Card title="Trade history">
         <div className="max-h-[480px] overflow-auto scrollbar-thin">
           <table className="w-full min-w-[900px]">
-            <thead className="sticky top-0 border-b border-neutral-800 bg-ink-900">
+            <thead className="sticky top-0 border-b border-white/[0.07] bg-ink-900">
               <tr>
                 <Th>Time</Th><Th>Side</Th><Th>Token</Th><Th>Reason</Th>
                 <Th className="text-right">SOL</Th><Th className="text-right">Price</Th><Th className="text-right">Tip + fees</Th><Th className="text-right">PnL</Th><Th>Tx</Th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-neutral-800/70">
+            <tbody className="divide-y divide-white/[0.05]">
               {shown.map((t) => (
                 <tr key={t.id} className="hover:bg-neutral-900/60">
                   <Td className="font-mono text-xs text-neutral-400">{time(t.ts)}</Td>

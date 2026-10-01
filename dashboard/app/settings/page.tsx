@@ -57,7 +57,7 @@ export default function SettingsPage() {
               <ModeSwitch />
             </div>
             {!s?.liveAllowed && (
-              <div className="flex gap-2 rounded-xl border border-neutral-800 bg-ink-950/60 p-3 text-xs text-neutral-400">
+              <div className="flex gap-2 rounded-xl border border-white/[0.07] bg-ink-950/60 p-3 text-xs text-neutral-400">
                 <AlertTriangle size={15} className="shrink-0 text-amber-300" />
                 Live mode is locked by the engine. Set <code className="font-mono">ALLOW_LIVE_TRADING=true</code> on the engine host (<code className="font-mono">.env</code> locally, the hostin <code className="font-mono">.env</code> and restart it to unlock the toggle.apos;s variables in production) and restart it to unlock the switch.
               </div>

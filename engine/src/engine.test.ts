@@ -172,6 +172,23 @@ test("coin page detail: trade tape, incremental fetch and holders from net buys"
   assert.equal(tokenDetail("unknown-mint"), null);
 });
 
+test("live push: changed coins are batched and a coin's new trades come by sequence", async () => {
+  const { addLaunch, applyTrade, takeDirty, tapeSince, tapeBounds } = await import("./feed.js");
+  const { bus } = await import("./bus.js");
+  takeDirty();
+  const mint = Keypair.generate().publicKey.toBase58();
+  const pushed = new Promise<void>((r) => bus.once("feed", () => r()));
+  addLaunch({ mint, name: "Push", symbol: "PUSH", uri: "", creator: "dev", priceSol: 3e-8, marketCapSol: 30, ts: Date.now(), simulated: false });
+  for (let i = 0; i < 5; i++) applyTrade({ mint, priceSol: 3e-8 + i * 1e-9, isBuy: true, solAmount: 0.1, trader: `t${i}`, byCreator: false });
+  await pushed;
+  // Six changes to one coin arrive as one entry.
+  assert.deepEqual(takeDirty(), [mint]);
+  assert.deepEqual(takeDirty(), []);
+  assert.deepEqual(tapeSince(mint, 3).map((t) => t.seq), [4, 5]);
+  assert.deepEqual(tapeSince(mint, 5), []);
+  assert.equal(tapeBounds(mint)!.lastSeq, 5);
+});
+
 test("a coin open on its page stays tracked after it scrolls out of the feed", async () => {
   const { addLaunch, tokenDetail, getLaunch, _resetFeed } = await import("./feed.js");
   _resetFeed();

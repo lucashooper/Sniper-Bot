@@ -110,12 +110,46 @@ export const recentLaunches = () => launches;
 export const getLaunch = (mint: string) => byMint.get(mint);
 export const isTrackedLaunch = (mint: string) => byMint.has(mint);
 
+/** Coins that changed since the last push to the dashboard. */
+const dirty = new Set<string>();
+/** How often changed coins are pushed to open dashboards: fast enough to feel live, slow enough to batch busy coins. */
+export const PUSH_MS = 100;
 let notifyTimer: NodeJS.Timeout | null = null;
-function notify() {
+function notify(mint: string) {
+  dirty.add(mint);
   notifyTimer ??= setTimeout(() => {
     notifyTimer = null;
-    bus.changed("launches");
-  }, 500);
+    bus.emit("feed");
+  }, PUSH_MS);
+}
+
+/** The coins that changed since the last call, for the server's live push. */
+export function takeDirty(): string[] {
+  const out = [...dirty];
+  dirty.clear();
+  return out;
+}
+
+/** Trades of a coin newer than `after`, without touching how long the coin stays tracked. */
+export function tapeSince(mint: string, after: number): TapeTrade[] {
+  const tape = tapes.get(mint);
+  if (!tape?.length || tape[tape.length - 1].seq <= after) return [];
+  let i = tape.length;
+  while (i > 0 && tape[i - 1].seq > after) i--;
+  return tape.slice(i);
+}
+
+/** The coin's row and the sequence range of its tape, cheaply, for the live push. */
+export function tapeBounds(mint: string) {
+  const l = byMint.get(mint);
+  if (!l) return null;
+  const tape = tapes.get(mint) ?? [];
+  return { launch: l, firstSeq: tape[0]?.seq ?? 0, lastSeq: seqs.get(mint) ?? 0 };
+}
+
+/** Marks a coin as open on a page, so it stays tracked after it scrolls out of the feed. */
+export function touchView(mint: string) {
+  if (byMint.has(mint)) viewedAt.set(mint, Date.now());
 }
 
 export function addLaunch(e: {
@@ -172,7 +206,7 @@ export function addLaunch(e: {
     else forget(old.mint);
   }
   for (const m of kept) if (!retained(m, now)) forget(m);
-  notify();
+  notify(l.mint);
   return l;
 }
 
@@ -227,7 +261,7 @@ export function applyTrade(t: FeedTrade): Launch | null {
   }
   l.spark.push(l.marketCapSol);
   if (l.spark.length > SPARK_POINTS) l.spark.shift();
-  notify();
+  notify(l.mint);
   return l;
 }
 
@@ -270,14 +304,14 @@ export function markMigrated(mint: string) {
   if (!l) return;
   l.migrated = true;
   l.curvePct = 100;
-  notify();
+  notify(mint);
 }
 
 export function markLaunch(mint: string, patch: Partial<Pick<Launch, "sniped" | "skipped">>) {
   const l = byMint.get(mint);
   if (!l) return;
   Object.assign(l, patch);
-  notify();
+  notify(mint);
 }
 
 const clampPct = (n: number) => Math.min(100, Math.max(0, n));
@@ -354,7 +388,7 @@ export function loadMeta(l: Launch, fetcher: (url: string) => Promise<unknown> =
 function settleMeta(l: Launch, meta: TokenMeta | null) {
   l.meta = meta;
   l.metaStatus = meta ? "ok" : "none";
-  notify();
+  notify(l.mint);
   metaWaiters.get(l.mint)?.forEach((fn) => fn());
   metaWaiters.delete(l.mint);
 }
@@ -391,6 +425,7 @@ export function _resetFeed() {
   holdings.clear();
   viewedAt.clear();
   kept.clear();
+  dirty.clear();
   queue.length = 0;
 }
 

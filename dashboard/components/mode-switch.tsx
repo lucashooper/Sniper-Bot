@@ -18,9 +18,7 @@ export function ModeSwitch() {
 
   if (!connected || !state) {
     return (
-      <span className="inline-flex items-center gap-2 rounded-full border border-neutral-800 bg-ink-800 px-3 py-1.5 text-xs font-medium text-neutral-400">
-        <i className="h-2 w-2 rounded-full bg-neutral-600" /> Engine offline
-      </span>
+      <span className="inline-flex h-8 items-center gap-2 rounded-lg border border-white/[0.06] px-2.5 text-xs font-medium text-neutral-500">Offline</span>
     );
   }
 
@@ -51,8 +49,8 @@ export function ModeSwitch() {
         aria-label="Trading mode"
         onClick={() => (live ? void set(true) : setOpen(true))}
         className={cx(
-          "inline-flex h-9 items-center gap-2 rounded-full border px-3.5 text-xs font-semibold transition",
-          live ? "border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/15" : "border-neutral-800 bg-ink-800 text-neutral-300 hover:border-neutral-700 hover:text-neutral-100",
+          "inline-flex h-8 items-center gap-2 rounded-lg border px-2.5 text-xs font-medium transition",
+          live ? "border-rose-500/30 bg-rose-500/[0.08] text-rose-200 hover:bg-rose-500/15" : "border-white/[0.06] bg-white/[0.02] text-neutral-400 hover:border-white/[0.12] hover:text-neutral-100",
         )}
         title={live ? "Live: trades spend real SOL. Click to return to simulation" : "Simulation: paper trades only. Click to go live"}
       >
@@ -62,7 +60,7 @@ export function ModeSwitch() {
             <span className="relative inline-flex h-2 w-2 rounded-full bg-rose-500" />
           </span>
         ) : (
-          <FlaskConical size={13} className="text-violet-300" />
+          <FlaskConical size={13} className="text-neutral-500" />
         )}
         {live ? "Live" : "Simulation"}
       </button>

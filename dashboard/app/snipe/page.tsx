@@ -108,7 +108,7 @@ export default function SnipePage() {
                 <select
                   value={chosen}
                   onChange={(e) => setWalletId(e.target.value)}
-                  className="h-10 w-full rounded-xl border border-neutral-800 bg-ink-950 px-3 text-sm outline-none focus:border-violet-500/60"
+                  className="h-10 w-full rounded-xl border border-white/[0.07] bg-ink-950 px-3 text-sm outline-none focus:border-violet-500/60"
                 >
                   <WalletOptions paper={!live} />
                 </select>
@@ -120,7 +120,7 @@ export default function SnipePage() {
               <Field label="Priority fee" hint="0 = fetch live each trade"><Input type="number" min={0} value={draft.priorityFeeMicroLamports} onChange={(e) => set({ priorityFeeMicroLamports: Number(e.target.value) })} suffix="µL/CU" /></Field>
               <Field label="Jito tip"><Input type="number" step="0.001" min={0.000001} value={draft.jitoTipSol} onChange={(e) => set({ jitoTipSol: Number(e.target.value) })} suffix="SOL" /></Field>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-neutral-800 bg-ink-950/60 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.07] bg-ink-950/60 px-4 py-3">
               <div>
                 <div className="text-sm font-medium">Dynamic tip</div>
                 <div className="text-xs text-neutral-500">Use the 75th-percentile landed tip when it is higher, capped at the max.</div>
@@ -154,7 +154,7 @@ export default function SnipePage() {
               <Field label="Keywords" hint="Comma separated. Empty = every launch.">
                 <Input value={draft.autoSnipeKeywords.join(", ")} onChange={(e) => set({ autoSnipeKeywords: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} placeholder="cat, ai" />
               </Field>
-              <div className="border-t border-neutral-800 pt-4">
+              <div className="border-t border-white/[0.07] pt-4">
                 <FiltersPanel draft={draft} set={set} />
               </div>
             </div>
@@ -223,7 +223,7 @@ function ExitRules() {
           <Button size="sm" onClick={() => set({ exitRules: [...rules, { id: `sl${Date.now()}`, kind: "stop_loss", triggerPct: -40, sellPct: 100, enabled: true }] })}><Plus size={13} /> Stop-loss</Button>
         </div>
 
-        <div className="mt-4 space-y-3 border-t border-neutral-800 pt-4">
+        <div className="mt-4 space-y-3 border-t border-white/[0.07] pt-4">
           <div className="flex items-center justify-between">
             <div className="text-sm font-medium">Anti-rug emergency sell</div>
             <Toggle checked={a.enabled} onChange={(v) => set({ antiRug: { ...a, enabled: v } })} />

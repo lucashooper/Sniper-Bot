@@ -6,8 +6,8 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { ArrowLeft, Crown, ExternalLink, Flame, Search, ShieldAlert, Users, Zap } from "lucide-react";
 import { api, useEngine } from "@/lib/engine";
 import { accountUrl, coinPage, compact, pct, short, solscan, time } from "@/lib/format";
-import type { Position, SellAllResult, TapeTrade, TokenDetail, Trade } from "@/lib/types";
-import { Avatar, CopyCa, Socials, age, defaultWalletId, money, useNow } from "@/components/token-feed";
+import type { Launch, Position, SellAllResult, TapeTrade, TokenDetail, Trade } from "@/lib/types";
+import { Avatar, CopyCa, CurveBar, Socials, age, defaultWalletId, money, useNow } from "@/components/token-feed";
 import { INTERVALS, TokenChart, type ChartUnit } from "@/components/token-chart";
 import { Badge, Button, Card, Empty, cx, useToast } from "@/components/ui";
 
@@ -29,17 +29,32 @@ function TokenRoute() {
 type Tracked = Extract<TokenDetail, { tracked: true }>;
 
 /**
- * The coin's detail from the engine, re-fetched each time the feed ticks. After the first load only trades the page
- * has not seen are sent (by sequence number), so a busy coin's chart stays cheap to keep live.
+ * The coin's detail from the engine. Newer engines push each new trade over the live connection the moment it
+ * happens; the full detail (holders) is re-fetched at most every few seconds. Older engines get a re-fetch per feed
+ * tick. After the first load only trades the page has not seen are fetched (by sequence number).
  */
 function useTokenDetail(mint: string) {
-  const { feedVersion, connected } = useEngine();
+  const { feedVersion, connected, push, watchTape, state } = useEngine();
   const [detail, setDetail] = useState<TokenDetail | null>(null);
   const [trades, setTrades] = useState<TapeTrade[]>([]);
+  const [pushedLaunch, setPushedLaunch] = useState<Launch | null>(null);
   const [error, setError] = useState<string | null>(null);
   const last = useRef(0);
   const inflight = useRef(false);
   const again = useRef(false);
+
+  /** Appends trades the page does not have yet; false when there is a gap (the page must reload the tape). */
+  const append = useCallback((incoming: TapeTrade[]) => {
+    const fresh = incoming.filter((t) => t.seq > last.current);
+    if (!fresh.length) return true;
+    if (fresh[0].seq > last.current + 1) return false;
+    last.current = fresh[fresh.length - 1].seq;
+    setTrades((t) => {
+      const next = t.concat(fresh);
+      return next.length > 3000 ? next.slice(-3000) : next;
+    });
+    return true;
+  }, []);
 
   const load = useCallback(async () => {
     if (inflight.current) return void (again.current = true);
@@ -59,14 +74,9 @@ function useTokenDetail(mint: string) {
           setTrades(d.trades);
           last.current = d.lastSeq;
         }
-      } else if (d.trades.length) {
-        setTrades((t) => {
-          const next = t.concat(d.trades);
-          return next.length > 3000 ? next.slice(-3000) : next;
-        });
-        last.current = d.lastSeq;
-      }
+      } else append(d.trades);
       setDetail(d);
+      if (d.tracked) setPushedLaunch(null);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -76,18 +86,52 @@ function useTokenDetail(mint: string) {
         void load();
       }
     }
-  }, [mint]);
+  }, [mint, append]);
+
+  const tracked = !!detail?.tracked;
+  // Live trades over the socket. Holders and counts change with every trade, so re-fetch the detail now and then too.
+  const lastFull = useRef(0);
+  useEffect(() => {
+    if (!push || !connected || !tracked) return;
+    return watchTape(
+      mint,
+      () => last.current,
+      (p) => {
+        if (p.launch) setPushedLaunch(p.launch);
+        if (p.lastSeq < last.current || !append(p.trades)) {
+          last.current = 0;
+          return void load();
+        }
+        if (p.trades.length && Date.now() - lastFull.current > 3000) {
+          lastFull.current = Date.now();
+          void load();
+        }
+      },
+    );
+  }, [push, connected, tracked, mint, watchTape, append, load]);
 
   useEffect(() => {
     if (connected) void load();
-  }, [feedVersion, connected, load]);
+    // A pushing engine sends trades itself; only older ones need a re-fetch per feed tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [push ? 0 : feedVersion, connected, load]);
   // The engine forgets a coin nobody has open after a while; asking now and then keeps it tracked while the page is up.
   useEffect(() => {
     const t = setInterval(() => void load(), 30_000);
     return () => clearInterval(t);
   }, [load]);
 
-  return { detail, trades, error };
+  // The newest numbers for the header: the feed's copy (pushed ~10x a second) beats the last full fetch.
+  const feedLaunch = state?.launches.find((l) => l.mint === mint);
+  const merged = useMemo(() => {
+    if (!detail?.tracked) return detail;
+    // Trade counts only grow, so the copy with the most trades is the newest.
+    const n = (l: Launch) => l.buys + l.sells;
+    const fresh = [feedLaunch, pushedLaunch].reduce<Launch>((best, l) => (l && n(l) > n(best) ? l : best), detail.launch);
+    return fresh === detail.launch ? detail : { ...detail, launch: fresh };
+  }, [detail, feedLaunch, pushedLaunch]);
+
+  return { detail: merged, trades, error };
 }
 
 /** Your own fills on this coin, for chart markers and the "Your trades" tab. */
@@ -132,25 +176,25 @@ function TokenView({ mint }: { mint: string }) {
   if (!detail && !error) return <div className="py-24 text-center text-sm text-neutral-500">Loading {short(mint)}…</div>;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Header: identity and headline numbers */}
-      <div className="glass flex flex-wrap items-center gap-x-6 gap-y-3 rounded-2xl border border-neutral-800 bg-ink-900/80 px-4 py-3">
-        <Link href="/feed" className="grid h-8 w-8 place-items-center rounded-lg text-neutral-500 hover:bg-neutral-800 hover:text-neutral-100" title="Back to the feed">
+      <div className="glass flex flex-wrap items-center gap-x-7 gap-y-3 rounded-xl border border-white/[0.06] bg-ink-900/70 px-3 py-2.5">
+        <Link href="/feed" className="grid h-8 w-8 place-items-center rounded-lg text-neutral-500 transition hover:bg-white/[0.06] hover:text-neutral-100" title="Back to the feed">
           <ArrowLeft size={16} />
         </Link>
         <div className="flex min-w-0 items-center gap-3">
-          {l ? <Avatar l={l} size={44} /> : <div className="grid h-11 w-11 place-items-center rounded-xl bg-ink-800 text-xs font-bold">{symbol.slice(0, 2)}</div>}
+          {l ? <Avatar l={l} size={44} /> : <div className="grid h-11 w-11 place-items-center rounded-md bg-ink-800 text-xs font-bold ring-1 ring-white/[0.06]">{symbol.slice(0, 2)}</div>}
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="text-lg font-semibold">{symbol}</span>
+              <span className="text-base font-semibold tracking-tight">{symbol}</span>
               <span className="max-w-[180px] truncate text-sm text-neutral-500">{name}</span>
               <CopyCa mint={mint} />
             </div>
             <div className="mt-0.5 flex items-center gap-2.5 text-xs">
-              {l && <span className="font-mono text-emerald-400">{age(l.ts, now)}</span>}
+              {l && <span className="font-medium text-emerald-400">{age(l.ts, now)}</span>}
               {l && <Socials l={l} />}
               {l?.migrated && <Badge tone="amber">PumpSwap</Badge>}
-              {simulated && <Badge tone="violet">sim</Badge>}
+              {simulated && <Badge>sim</Badge>}
               {!tracked && <Badge>not in feed</Badge>}
             </div>
           </div>
@@ -158,8 +202,10 @@ function TokenView({ mint }: { mint: string }) {
         {l && (
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <div>
-              <div className="font-mono text-2xl font-semibold tabular-nums text-neutral-50">{value(l.marketCapSol)}</div>
-              {change5m !== null && <div className={cx("font-mono text-[11px]", change5m >= 0 ? "text-emerald-400" : "text-rose-400")}>{pct(change5m)} 5m</div>}
+              <div className="text-xl font-semibold tracking-tight text-neutral-50">
+                <span key={l.marketCapSol} className={change5m !== null && change5m < 0 ? "tick-down" : "tick-up"}>{value(l.marketCapSol)}</span>
+              </div>
+              {change5m !== null && <div className={cx("text-[11px]", change5m >= 0 ? "text-emerald-400" : "text-rose-400")}>{pct(change5m)} 5m</div>}
             </div>
             <HeadStat label="Price" value={solUsd ? `$${(l.priceSol * solUsd).toPrecision(3)}` : `${l.priceSol.toPrecision(3)} SOL`} />
             <HeadStat label="Liquidity" value={value(l.liquiditySol)} />
@@ -171,11 +217,11 @@ function TokenView({ mint }: { mint: string }) {
       </div>
 
       {/* On phones the trade panel sits right under the chart; on wide screens it is the right-hand column. */}
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="min-w-0">
           <ChartCard mint={mint} tracked={tracked} trades={trades} fills={fills} solUsd={solUsd} simulated={simulated} />
         </div>
-        <div className="space-y-4 xl:row-span-2">
+        <div className="space-y-3 xl:row-span-2">
           <TradePanel mint={mint} symbol={symbol} priceSol={lastPrice} positions={positions} migrated={!!l?.migrated} />
           {positions.length > 0 && <PositionCard positions={positions} value={value} />}
           {tracked && <TokenInfo d={tracked} />}
@@ -193,7 +239,7 @@ function HeadStat({ label, value, tone }: { label: string; value: string; tone?:
   return (
     <div>
       <div className="text-[11px] text-neutral-500">{label}</div>
-      <div className={cx("font-mono text-sm tabular-nums", tone === "good" ? "text-emerald-400" : "text-neutral-200")}>{value}</div>
+      <div className={cx("text-[13px] font-medium", tone === "good" ? "text-emerald-400" : "text-neutral-200")}>{value}</div>
     </div>
   );
 }
@@ -211,19 +257,19 @@ function ChartCard({ mint, tracked, trades, fills, solUsd, simulated }: { mint: 
 
   return (
     <Card className="overflow-hidden">
-      <div className="flex flex-wrap items-center gap-2 border-b border-neutral-800/80 px-3 py-2 text-xs">
-        <div className="flex rounded-lg bg-ink-950 p-0.5">
+      <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.05] px-2.5 py-1.5 text-xs">
+        <div className="flex rounded-md bg-white/[0.03] p-0.5">
           <Seg on={src === "bot"} onClick={() => setSource("bot")} disabled={!tracked}>Live</Seg>
           <Seg on={src === "dex"} onClick={() => setSource("dex")} disabled={simulated}>DexScreener</Seg>
         </div>
         {src === "bot" && (
           <>
-            <div className="flex rounded-lg bg-ink-950 p-0.5">
+            <div className="flex rounded-md bg-white/[0.03] p-0.5">
               {INTERVALS.map((i) => (
                 <Seg key={i.sec} on={interval === i.sec} onClick={() => setIntervalSec(i.sec)}>{i.label}</Seg>
               ))}
             </div>
-            <div className="flex rounded-lg bg-ink-950 p-0.5">
+            <div className="flex rounded-md bg-white/[0.03] p-0.5">
               <Seg on={unit === "mcap"} onClick={() => setUnit("mcap")}>MarketCap</Seg>
               <Seg on={unit === "price"} onClick={() => setUnit("price")}>Price</Seg>
             </div>
@@ -264,7 +310,7 @@ function ChartCard({ mint, tracked, trades, fills, solUsd, simulated }: { mint: 
 
 function Seg({ on, children, ...p }: React.ButtonHTMLAttributes<HTMLButtonElement> & { on: boolean }) {
   return (
-    <button {...p} className={cx("rounded-md px-2.5 py-1 font-medium transition disabled:opacity-30", on ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-200")}>
+    <button {...p} className={cx("rounded px-2 py-1 font-medium transition disabled:opacity-30", on ? "bg-white/[0.08] text-white" : "text-neutral-500 hover:text-neutral-200")}>
       {children}
     </button>
   );
@@ -283,9 +329,9 @@ function BottomTabs({ tracked, trades, fills, value }: { tracked: Tracked | null
   ] as const;
   return (
     <Card>
-      <div className="flex gap-1 border-b border-neutral-800/80 px-3 py-2">
+      <div className="flex gap-4 border-b border-white/[0.05] px-4 py-2.5">
         {tabs.map((t) => (
-          <button key={t.id} onClick={() => setTab(t.id)} className={cx("whitespace-nowrap rounded-lg px-3 py-1.5 text-sm", tab === t.id ? "bg-neutral-800 text-white" : "text-neutral-500 hover:text-neutral-200")}>
+          <button key={t.id} onClick={() => setTab(t.id)} className={cx("whitespace-nowrap text-[13px] font-medium transition", tab === t.id ? "text-white" : "text-neutral-500 hover:text-neutral-200")}>
             {t.label}
           </button>
         ))}
@@ -295,7 +341,7 @@ function BottomTabs({ tracked, trades, fills, value }: { tracked: Tracked | null
           (recent.length ? (
             <Table head={["Age", "Type", "MC", "SOL", "Tokens", "Trader"]}>
               {recent.map((t) => (
-                <tr key={t.seq} className="font-mono text-xs">
+                <tr key={t.seq} className="text-xs">
                   <td className="px-4 py-1.5 text-neutral-500">{time(t.ts)}</td>
                   <td className={cx("px-3 py-1.5 font-semibold", t.isBuy ? "text-emerald-400" : "text-rose-400")}>{t.isBuy ? "Buy" : "Sell"}</td>
                   <td className="px-3 py-1.5 text-neutral-300">{value(t.priceSol * 1_000_000_000)}</td>
@@ -315,14 +361,14 @@ function BottomTabs({ tracked, trades, fills, value }: { tracked: Tracked | null
             <>
               <Table head={["#", "Wallet", "Tokens", "% supply"]}>
                 {tracked.holders.map((h, i) => (
-                  <tr key={h.address} className="font-mono text-xs">
+                  <tr key={h.address} className="text-xs">
                     <td className="px-4 py-1.5 text-neutral-600">{i + 1}</td>
                     <td className="px-3 py-1.5"><Addr a={h.address} dev={h.isCreator} /></td>
                     <td className="px-3 py-1.5 text-neutral-300">{compact(h.tokens)}</td>
                     <td className="px-3 py-1.5">
                       <div className="flex items-center gap-2">
-                        <div className="h-1 w-16 overflow-hidden rounded-full bg-neutral-800">
-                          <div className={cx("h-full", h.isCreator ? "bg-amber-400" : "bg-violet-400")} style={{ width: `${Math.min(100, h.pct * 5)}%` }} />
+                        <div className="h-1 w-16 overflow-hidden rounded-full bg-white/[0.06]">
+                          <div className={cx("h-full", h.isCreator ? "bg-amber-400" : "bg-emerald-400/70")} style={{ width: `${Math.min(100, h.pct * 5)}%` }} />
                         </div>
                         <span className="text-neutral-300">{h.pct.toFixed(2)}%</span>
                       </div>
@@ -330,7 +376,7 @@ function BottomTabs({ tracked, trades, fills, value }: { tracked: Tracked | null
                   </tr>
                 ))}
               </Table>
-              <p className="border-t border-neutral-800/80 px-4 py-2 text-[11px] text-neutral-600">Built from buys and sells the bot saw since launch; tokens moved wallet to wallet are not counted. The bonding curve itself is not listed.</p>
+              <p className="border-t border-white/[0.06] px-4 py-2 text-[11px] text-neutral-600">Built from buys and sells the bot saw since launch; tokens moved wallet to wallet are not counted. The bonding curve itself is not listed.</p>
             </>
           ) : (
             <Empty icon={<Users size={18} />} title="No holders seen">{tracked ? "Nobody has bought since the bot started watching this coin." : "The bot has no trade history for this coin."}</Empty>
@@ -339,7 +385,7 @@ function BottomTabs({ tracked, trades, fills, value }: { tracked: Tracked | null
           (fills.length ? (
             <Table head={["Time", "Side", "SOL", "Tokens", "Wallet", "Tx"]}>
               {fills.map((f) => (
-                <tr key={f.id} className="font-mono text-xs">
+                <tr key={f.id} className="text-xs">
                   <td className="px-4 py-1.5 text-neutral-500">{time(f.ts)}</td>
                   <td className={cx("px-3 py-1.5 font-semibold", f.side === "buy" ? "text-emerald-400" : "text-rose-400")}>
                     {f.side} {f.mode === "sim" && <span className="font-normal text-violet-300">sim</span>}
@@ -368,14 +414,14 @@ function BottomTabs({ tracked, trades, fills, value }: { tracked: Tracked | null
 function Table({ head, children }: { head: string[]; children: React.ReactNode }) {
   return (
     <table className="w-full min-w-[520px]">
-      <thead className="sticky top-0 bg-ink-900/95 backdrop-blur">
-        <tr className="text-left text-[11px] font-medium uppercase tracking-wide text-neutral-500">
+      <thead className="frost sticky top-0 bg-ink-900/85">
+        <tr className="text-left text-[11px] font-medium text-neutral-500">
           {head.map((h, i) => (
             <th key={h} className={cx("py-2", i === 0 ? "px-4" : "px-3")}>{h}</th>
           ))}
         </tr>
       </thead>
-      <tbody className="divide-y divide-neutral-800/60">{children}</tbody>
+      <tbody className="divide-y divide-white/[0.04]">{children}</tbody>
     </table>
   );
 }
@@ -467,14 +513,14 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
     <Card>
       {toast.node}
       <div className="p-3">
-        <div className="grid grid-cols-2 rounded-xl bg-ink-950 p-1">
-          <button onClick={() => setSide("buy")} className={cx("rounded-lg py-2 text-sm font-semibold transition", side === "buy" ? "bg-emerald-500 text-emerald-950" : "text-neutral-500 hover:text-neutral-200")}>Buy</button>
-          <button onClick={() => setSide("sell")} className={cx("rounded-lg py-2 text-sm font-semibold transition", side === "sell" ? "bg-rose-500 text-white" : "text-neutral-500 hover:text-neutral-200")}>Sell</button>
+        <div className="grid grid-cols-2 rounded-lg bg-white/[0.03] p-0.5">
+          <button onClick={() => setSide("buy")} className={cx("rounded-md py-1.5 text-[13px] font-semibold transition", side === "buy" ? "bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/25" : "text-neutral-500 hover:text-neutral-200")}>Buy</button>
+          <button onClick={() => setSide("sell")} className={cx("rounded-md py-1.5 text-[13px] font-semibold transition", side === "sell" ? "bg-rose-500/15 text-rose-300 ring-1 ring-rose-400/25" : "text-neutral-500 hover:text-neutral-200")}>Sell</button>
         </div>
 
         <label className="mt-3 flex items-center justify-between gap-2 text-xs text-neutral-500">
           Wallet
-          <select value={chosen} onChange={(e) => setWalletId(e.target.value)} className="h-8 max-w-[210px] flex-1 rounded-lg border border-neutral-800 bg-ink-950 px-2 text-xs text-neutral-200 outline-none focus:border-violet-500/60">
+          <select value={chosen} onChange={(e) => setWalletId(e.target.value)} className="h-8 max-w-[210px] flex-1 rounded-md border border-white/[0.06] bg-ink-900 px-2 text-xs text-neutral-200 outline-none transition focus:border-white/[0.14]">
             {!live && <option value="">Paper wallet</option>}
             {live && !wallets.length && <option value="">No active wallet</option>}
             {wallets.map((w) => (
@@ -486,7 +532,7 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
 
         {side === "buy" ? (
           <div className="mt-3 space-y-3">
-            <div className="flex items-center rounded-xl border border-neutral-800 bg-ink-950 px-3 focus-within:border-emerald-500/50">
+            <div className="flex items-center rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 transition focus-within:border-emerald-400/40">
               <span className="text-xs text-neutral-500">Amount</span>
               <input
                 type="number"
@@ -497,16 +543,16 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
                 onChange={(e) => setAmount(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && void buy(sol)}
                 placeholder="0.0"
-                className="h-11 min-w-0 flex-1 bg-transparent px-2 text-right font-mono text-base outline-none"
+                className="h-11 min-w-0 flex-1 bg-transparent px-2 text-right text-base font-medium outline-none"
               />
-              <span className="font-mono text-xs text-neutral-400">SOL</span>
+              <span className="text-xs text-neutral-500">SOL</span>
             </div>
             <div className="grid grid-cols-4 gap-1.5">
               {presets.slice(0, 8).map((p) => (
                 <button
                   key={p}
                   onClick={() => setAmount(String(p))}
-                  className={cx("h-8 rounded-lg border font-mono text-xs transition", Number(amount) === p ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-200" : "border-neutral-800 bg-ink-800 text-neutral-300 hover:bg-neutral-800")}
+                  className={cx("h-8 rounded-md border text-xs font-medium transition", Number(amount) === p ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200" : "border-white/[0.06] bg-white/[0.03] text-neutral-300 hover:border-white/[0.12] hover:bg-white/[0.06]")}
                 >
                   {p}
                 </button>
@@ -518,8 +564,8 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
                 slip {state.settings.slippagePct}% · tip {state.settings.jitoTipSol} SOL
               </span>
             </div>
-            <Button variant="success" size="lg" className="w-full" disabled={busy !== null || !(sol > 0)} onClick={() => void buy(sol)}>
-              <Zap size={16} /> {busy === "buy" ? "Buying…" : `Buy ${symbol}`}
+            <Button variant="success" size="lg" className="w-full font-semibold" disabled={busy !== null || !(sol > 0)} onClick={() => void buy(sol)}>
+              <Zap size={15} /> {busy === "buy" ? "Buying…" : `Buy ${symbol}`}
             </Button>
             {migrated && <p className="text-[11px] text-neutral-500">Graduated coin: the buy routes through its PumpSwap pool.</p>}
           </div>
@@ -527,9 +573,9 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
           <div className="mt-3 space-y-3">
             {pos ? (
               <>
-                <div className="flex justify-between rounded-xl border border-neutral-800 bg-ink-950 px-3 py-2.5 text-xs">
+                <div className="flex justify-between rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-xs">
                   <span className="text-neutral-500">Holding · {pos.walletName}</span>
-                  <span className="font-mono text-neutral-200">
+                  <span className="text-neutral-200">
                     {compact(pos.tokens)} {symbol} · {(pos.tokens * pos.lastPriceSol).toFixed(4)} SOL
                   </span>
                 </div>
@@ -540,8 +586,8 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
                       disabled={busy !== null}
                       onClick={() => void sell(p)}
                       className={cx(
-                        "h-10 rounded-lg font-mono text-xs font-semibold transition active:scale-95 disabled:opacity-40",
-                        p === 100 ? "bg-rose-500 text-white hover:bg-rose-400" : "border border-rose-500/30 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20",
+                        "h-9 rounded-md text-xs font-semibold transition active:scale-95 disabled:opacity-40",
+                        p === 100 ? "bg-rose-500/90 text-white hover:bg-rose-500" : "border border-rose-400/20 bg-rose-500/[0.07] text-rose-200 hover:bg-rose-500/15",
                       )}
                     >
                       {busy === `sell${p}` ? "…" : `${p}%`}
@@ -556,7 +602,7 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
                 <p className="text-[11px] text-neutral-500">Sells go out at market with your slippage, priority fee and Jito tip. Take-profit and stop-loss rules keep running on what is left.</p>
               </>
             ) : (
-              <div className="rounded-xl border border-dashed border-neutral-800 px-3 py-6 text-center text-xs text-neutral-500">
+              <div className="rounded-xl border border-dashed border-white/[0.07] px-3 py-6 text-center text-xs text-neutral-500">
                 {positions.length ? "No position from this wallet; pick the wallet that holds it." : `You hold no ${symbol}.`}
               </div>
             )}
@@ -579,7 +625,7 @@ function PositionCard({ positions, value }: { positions: Position[]; value: (sol
   const pnl = worth - cost + realized;
   return (
     <Card>
-      <div className="grid grid-cols-3 divide-x divide-neutral-800/80 text-center">
+      <div className="grid grid-cols-3 divide-x divide-white/[0.05] text-center">
         <Cell label="Invested" value={`${cost.toFixed(3)}`} sub="SOL" />
         <Cell label="Holding" value={`${worth.toFixed(3)}`} sub={value(worth)} />
         <Cell label="PnL" value={`${pnl >= 0 ? "+" : ""}${pnl.toFixed(3)}`} sub={cost ? pct((pnl / cost) * 100) : ""} tone={pnl >= 0 ? "good" : "bad"} />
@@ -592,8 +638,8 @@ function Cell({ label, value, sub, tone }: { label: string; value: string; sub?:
   return (
     <div className="px-2 py-3">
       <div className="text-[11px] text-neutral-500">{label}</div>
-      <div className={cx("mt-0.5 font-mono text-sm font-semibold tabular-nums", tone === "good" ? "text-emerald-400" : tone === "bad" ? "text-rose-400" : "text-neutral-100")}>{value}</div>
-      {sub && <div className="font-mono text-[10px] text-neutral-500">{sub}</div>}
+      <div className={cx("mt-0.5 text-sm font-semibold", tone === "good" ? "text-emerald-400" : tone === "bad" ? "text-rose-400" : "text-neutral-100")}>{value}</div>
+      {sub && <div className="text-[10px] text-neutral-500">{sub}</div>}
     </div>
   );
 }
@@ -616,18 +662,16 @@ function TokenInfo({ d }: { d: Tracked }) {
         <div>
           <div className="mb-1.5 flex justify-between text-xs">
             <span className="text-neutral-400">{l.migrated ? "Graduated to PumpSwap" : "Bonding curve"}</span>
-            <span className="font-mono text-neutral-200">{l.curvePct.toFixed(1)}%</span>
+            <span className="text-neutral-200">{l.curvePct.toFixed(1)}%</span>
           </div>
-          <div className="h-2 overflow-hidden rounded-full bg-neutral-800">
-            <div className={cx("h-full rounded-full transition-all", l.migrated ? "bg-amber-400" : "bg-gradient-to-r from-violet-500 to-emerald-400")} style={{ width: `${Math.max(1, l.curvePct)}%` }} />
-          </div>
+          <CurveBar pct={l.curvePct} migrated={l.migrated} />
         </div>
         <div className="grid grid-cols-3 gap-2">
           {tiles.map((t) => (
-            <div key={t.label} className="rounded-xl border border-neutral-800 bg-ink-950 px-2 py-2 text-center">
+            <div key={t.label} className="rounded-lg border border-white/[0.05] bg-white/[0.02] px-2 py-2 text-center">
               <div
                 className={cx(
-                  "font-mono text-sm font-semibold",
+                  "text-sm font-semibold",
                   t.tone === "good" && "text-emerald-400",
                   t.tone === "warn" && "text-amber-300",
                   t.tone === "bad" && "text-rose-400",
@@ -641,7 +685,7 @@ function TokenInfo({ d }: { d: Tracked }) {
           ))}
         </div>
         {l.devSold && (
-          <div className="flex items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+          <div className="flex items-center gap-2 rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
             <ShieldAlert size={14} /> The dev wallet has sold.
           </div>
         )}
@@ -679,7 +723,7 @@ function OpenByAddress() {
         }}
       >
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-600" />
-        <input value={ca} onChange={(e) => setCa(e.target.value)} placeholder="Contract address" className="h-11 w-full rounded-xl border border-neutral-800 bg-ink-950 pl-8 pr-3 font-mono text-sm outline-none focus:border-violet-500/60" />
+        <input value={ca} onChange={(e) => setCa(e.target.value)} placeholder="Contract address" className="h-11 w-full rounded-xl border border-white/[0.07] bg-ink-950 pl-8 pr-3 font-mono text-sm outline-none focus:border-white/20" />
       </form>
     </div>
   );

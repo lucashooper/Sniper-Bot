@@ -18,7 +18,7 @@
     "typescript": "5"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.117.2",
+    "@supabase/auth-js": "^2.117.2",
     "@types/qrcode": "^1.5.6",
     "framer-motion": "^13.4.6",
     "lightweight-charts": "^5.2.1",
