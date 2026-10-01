@@ -10,14 +10,25 @@ function num(v: string | undefined, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/** First non-empty variable among `names`, with stray quotes and spaces removed. */
+const first = (...names: string[]) =>
+  names.map((n) => (process.env[n] ?? "").trim().replace(/^["']|["']$/g, "").trim()).find(Boolean) ?? "";
+
+/** Accepts the common names for the RPC URL and a bare host; the WebSocket URL defaults to the same host over wss. */
+const rpcUrl = (() => {
+  const u = first("SOLANA_RPC_URL", "RPC_URL", "HELIUS_RPC_URL", "SOLANA_RPC");
+  return u && !/^[a-z]+:\/\//i.test(u) ? `https://${u}` : u;
+})();
+const wsUrl = first("SOLANA_WS_URL", "WS_URL", "RPC_WS_URL", "HELIUS_WS_URL") || rpcUrl.replace(/^http/i, "ws");
+
 /** Static process config, read once from the environment (.env at the repo root). */
 export const env = {
-  rpcUrl: process.env.SOLANA_RPC_URL ?? "",
-  wsUrl: process.env.SOLANA_WS_URL ?? "",
+  rpcUrl,
+  wsUrl,
   /** Optional Helius key; enables getPriorityFeeEstimate. Derived from the RPC URL when it is a Helius URL. */
   heliusApiKey:
     process.env.HELIUS_API_KEY ??
-    (process.env.SOLANA_RPC_URL?.match(/helius-rpc\.com\/\?api-key=([\w-]+)/)?.[1] ?? ""),
+    (rpcUrl.match(/helius-rpc\.com\/\?api-key=([\w-]+)/)?.[1] ?? ""),
   jitoBlockEngineUrl: (process.env.JITO_BLOCK_ENGINE_URL ?? "https://mainnet.block-engine.jito.wtf").replace(/\/$/, ""),
   jitoAuthUuid: process.env.JITO_AUTH_UUID ?? "",
   keystorePassphrase: process.env.KEYSTORE_PASSPHRASE ?? "",
