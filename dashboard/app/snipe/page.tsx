@@ -6,6 +6,7 @@ import { api, useEngine } from "@/lib/engine";
 import { short } from "@/lib/format";
 import type { ExitRule } from "@/lib/types";
 import { useSettingsDraft } from "@/components/use-settings";
+import { FiltersPanel } from "@/components/filters-panel";
 import { Badge, Button, Card, Field, Input, Modal, Toggle, cx, useToast } from "@/components/ui";
 
 interface SafetyReport {
@@ -147,7 +148,7 @@ export default function SnipePage() {
         <div className="space-y-6">
           <Card title="Auto-snipe new launches" action={<Toggle checked={draft.autoSnipe} onChange={(v) => save({ autoSnipe: v }).catch((e) => toast.show(e.message, "err"))} />}>
             <div className="space-y-4 p-5">
-              <p className="text-xs text-neutral-500">Buys each new Pump.fun launch that matches your keywords and passes safety checks, up to the hourly cap.</p>
+              <p className="text-xs text-neutral-500">Buys each new Pump.fun launch that matches your keywords and filters and passes the safety checks, up to the hourly cap. With a curve trigger set, it waits for the bonding curve to reach it instead of buying at launch.</p>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Per snipe"><Input type="number" step="0.01" value={draft.autoSnipeSol} onChange={(e) => set({ autoSnipeSol: Number(e.target.value) })} suffix="SOL" /></Field>
                 <Field label="Max per hour"><Input type="number" min={1} value={draft.autoSnipeMaxPerHour} onChange={(e) => set({ autoSnipeMaxPerHour: Number(e.target.value) })} /></Field>
@@ -155,6 +156,9 @@ export default function SnipePage() {
               <Field label="Keywords" hint="Comma separated. Empty = every launch.">
                 <Input value={draft.autoSnipeKeywords.join(", ")} onChange={(e) => set({ autoSnipeKeywords: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} placeholder="cat, ai" />
               </Field>
+              <div className="border-t border-neutral-800 pt-4">
+                <FiltersPanel draft={draft} set={set} />
+              </div>
             </div>
           </Card>
           <ExitRules />

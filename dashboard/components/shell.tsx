@@ -15,7 +15,7 @@ export const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/wallets", label: "Wallets & Balances", icon: Wallet },
   { href: "/snipe", label: "Snipe Configuration", icon: Crosshair },
-  { href: "/feed", label: "Live Feed & Logs", icon: Radio },
+  { href: "/feed", label: "Live Feed", icon: Radio },
   { href: "/pnl", label: "PnL Analytics", icon: BarChart3 },
   { href: "/settings", label: "Settings & Keys", icon: KeyRound },
 ];

@@ -10,22 +10,9 @@ import { executeBuy, executeSell, isLive, PAPER_WALLET } from "./trader.js";
 import { listWallets } from "./wallets.js";
 import { short } from "./solana.js";
 import { trackPool, watchSupply } from "./stream.js";
+import { addLaunch, applyTrade, getLaunch, hasSocials, loadMeta, markLaunch, markMigrated, onMetaSettled, type Launch } from "./feed.js";
+import type { SnipeFilters } from "./settings.js";
 
-export interface Launch {
-  mint: string;
-  name: string;
-  symbol: string;
-  creator: string;
-  priceSol: number;
-  marketCapSol: number;
-  ts: number;
-  signature?: string;
-  simulated: boolean;
-  sniped?: boolean;
-}
-
-const launches: Launch[] = [];
-export const recentLaunches = () => launches;
 const autoSnipeTimes: number[] = [];
 
 function pickAutoWallet(): string {
@@ -34,26 +21,65 @@ function pickAutoWallet(): string {
   return (ws.find((w) => !w.isMaster) ?? ws[0])?.id ?? "";
 }
 
-async function maybeAutoSnipe(l: Launch) {
-  const s = getSettings();
-  if (!s.autoSnipe) return;
+export type FilterVerdict = { pass: true } | { pass: false; reason: string; final: boolean };
+
+/**
+ * Auto-snipe filters. A "final" failure can never clear (no socials in the metadata, the dev sold, the coin
+ * graduated, the watch window ran out), so the launch is dropped. Anything else may still clear on a later trade
+ * (market cap rising into range, the curve reaching the trigger), so the launch stays watched.
+ */
+export function evaluateFilters(l: Launch, f: SnipeFilters, keywords: string[], now = Date.now()): FilterVerdict {
+  const fail = (reason: string, final = false): FilterVerdict => ({ pass: false, reason, final });
   const hay = `${l.name} ${l.symbol}`.toLowerCase();
-  if (s.autoSnipeKeywords.length && !s.autoSnipeKeywords.some((k) => hay.includes(k.toLowerCase()))) return;
+  if (keywords.length && !keywords.some((k) => hay.includes(k.toLowerCase()))) return fail("no keyword match", true);
+  if (l.migrated) return fail("already graduated to PumpSwap", true);
+  if (f.maxWatchSec > 0 && now - l.ts > f.maxWatchSec * 1000) return fail(`not ready within ${f.maxWatchSec}s`, true);
+  if (f.skipIfDevSold && l.devSold) return fail("dev wallet sold", true);
+  if ((f.requireSocials || f.requireImage) && l.metaStatus === "pending") return fail("waiting for metadata");
+  if (f.requireSocials && !hasSocials(l.meta)) return fail("no Twitter/Telegram/website", true);
+  if (f.requireImage && !l.meta?.image) return fail("no image", true);
+  if (f.maxDevHoldPct > 0 && l.devHoldPct > f.maxDevHoldPct) return fail(`dev holds ${l.devHoldPct.toFixed(1)}% > ${f.maxDevHoldPct}%`);
+  if (f.curveTriggerPct > 0 && l.curvePct < f.curveTriggerPct) return fail(`curve ${l.curvePct.toFixed(0)}% < ${f.curveTriggerPct}%`);
+  if (f.minMarketCapSol > 0 && l.marketCapSol < f.minMarketCapSol) return fail(`mc ${l.marketCapSol.toFixed(1)} < ${f.minMarketCapSol} SOL`);
+  if (f.maxMarketCapSol > 0 && l.marketCapSol > f.maxMarketCapSol) return fail(`mc ${l.marketCapSol.toFixed(1)} > ${f.maxMarketCapSol} SOL`);
+  if (f.minLiquiditySol > 0 && l.liquiditySol < f.minLiquiditySol) return fail(`liquidity ${l.liquiditySol.toFixed(2)} < ${f.minLiquiditySol} SOL`);
+  return { pass: true };
+}
+
+/** Launches auto-snipe is still deciding on. */
+const watching = new Set<string>();
+
+function considerAutoSnipe(mint: string) {
+  const s = getSettings();
+  const l = getLaunch(mint);
+  if (!l) return void watching.delete(mint);
+  if (!watching.has(mint)) return;
+  if (!s.autoSnipe) return void watching.delete(mint);
+  const v = evaluateFilters(l, s.filters, s.autoSnipeKeywords);
+  if (!v.pass) {
+    if (v.final) {
+      watching.delete(mint);
+      markLaunch(mint, { skipped: v.reason });
+      log.debug("detect", `Auto-snipe passed on ${l.symbol}: ${v.reason}`, { mint });
+    }
+    return;
+  }
+  watching.delete(mint);
   const hourAgo = Date.now() - 3_600_000;
   while (autoSnipeTimes.length && autoSnipeTimes[0] < hourAgo) autoSnipeTimes.shift();
   if (autoSnipeTimes.length >= s.autoSnipeMaxPerHour) {
-    log.debug("detect", `Auto-snipe skipped ${l.symbol}: hourly cap of ${s.autoSnipeMaxPerHour} reached`);
-    return;
+    markLaunch(mint, { skipped: "hourly cap reached" });
+    return log.debug("detect", `Auto-snipe skipped ${l.symbol}: hourly cap of ${s.autoSnipeMaxPerHour} reached`);
   }
   const walletId = pickAutoWallet();
   if (!walletId) return log.warn("trade", "Auto-snipe skipped: no active wallet");
   autoSnipeTimes.push(Date.now());
-  l.sniped = true;
-  try {
-    await executeBuy({ mint: l.mint, walletId, sol: s.autoSnipeSol, reason: "auto_snipe", meta: l });
-  } catch (e) {
-    log.error("trade", `Auto-snipe ${l.symbol} failed: ${(e as Error).message}`, { mint: l.mint });
-  }
+  markLaunch(mint, { sniped: true });
+  const why = s.filters.curveTriggerPct > 0 ? ` at ${l.curvePct.toFixed(0)}% curve` : "";
+  log.info("detect", `Auto-snipe ${l.symbol}: filters passed${why} (mc ${l.marketCapSol.toFixed(1)} SOL, dev ${l.devHoldPct.toFixed(1)}%)`, { mint });
+  executeBuy({ mint, walletId, sol: s.autoSnipeSol, reason: "auto_snipe", meta: l }).catch((e) =>
+    log.error("trade", `Auto-snipe ${l.symbol} failed: ${(e as Error).message}`, { mint }),
+  );
 }
 
 function emergency(mint: string, why: string) {
@@ -85,15 +111,21 @@ function onEvent(e: MarketEvent) {
   const s = getSettings();
   switch (e.type) {
     case "launch": {
-      const l: Launch = { ...e };
-      launches.unshift(l);
-      if (launches.length > 100) launches.pop();
+      const l = addLaunch(e);
       log.info("detect", `New Pump.fun launch ${e.symbol} (${e.name}) mc ${e.marketCapSol.toFixed(1)} SOL`, { mint: e.mint, signature: e.signature });
-      bus.changed("launches");
-      void maybeAutoSnipe(l);
+      if (!e.simulated) loadMeta(l);
+      if (s.autoSnipe) {
+        watching.add(l.mint);
+        // The creator's own first buy is logged in the same transaction right after the create; wait for it so the
+        // dev-holding filter sees it, and re-check once the metadata (socials, image) has loaded.
+        const check = () => setTimeout(() => considerAutoSnipe(l.mint), 0);
+        check();
+        onMetaSettled(l.mint, check);
+      }
       break;
     }
     case "trade": {
+      if (applyTrade(e)) considerAutoSnipe(e.mint);
       if (!markPrice(e.mint, e.priceSol, e.venue)) break;
       bus.changed("positions");
       if (e.byCreator && !e.isBuy && s.antiRug.onCreatorSell) {
@@ -108,6 +140,8 @@ function onEvent(e: MarketEvent) {
       break;
     }
     case "migration":
+      markMigrated(e.mint);
+      watching.delete(e.mint);
       if (positionsForMint(e.mint).length) {
         log.info("detect", `${short(e.mint)} graduated to PumpSwap; exits now route through the AMM pool`, { mint: e.mint, signature: e.signature });
         if (!isSimMint(e.mint)) trackPool(e.mint);
@@ -141,6 +175,8 @@ async function pollLivePositions() {
 
 export function startEngine() {
   market.subscribe(onEvent);
+  // Quiet coins get no trades to re-check on; sweep so their watch window still expires.
+  setInterval(() => watching.forEach((m) => considerAutoSnipe(m)), 5_000);
   if (hasRpc()) {
     setInterval(() => void pollLivePositions(), 5_000);
     // Keep supply watchers aligned with held live mints.

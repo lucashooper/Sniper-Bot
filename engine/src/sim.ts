@@ -1,6 +1,7 @@
 import { Keypair } from "@solana/web3.js";
 import { log } from "./bus.js";
 import { market } from "./events.js";
+import { setMeta } from "./feed.js";
 
 /**
  * Synthetic Pump.fun-like market for simulation mode when no RPC is configured (or for demoing the dashboard).
@@ -23,9 +24,20 @@ const coins = new Map<string, SimCoin>();
 const ADJ = ["Based", "Tiny", "Giga", "Sleepy", "Cosmic", "Angry", "Degen", "Frog", "Moon", "Turbo", "Wif", "Baby"];
 const NOUN = ["Cat", "Pepe", "Doge", "Hamster", "Goblin", "Penguin", "Chad", "Otter", "Wizard", "Banana", "Duck", "Bonk"];
 const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)];
-// Fresh Pump.fun curve: ~30 SOL virtual / ~1.073B virtual tokens.
-const START_PRICE = 30 / 1_073_000_000;
+// Fresh Pump.fun curve: ~30 SOL virtual / ~1.073B virtual tokens, constant product.
+const V_SOL = 30;
+const V_TOK = 1_073_000_000;
+const K = V_SOL * V_TOK;
+const CURVE_TOKENS = 793_100_000;
+const START_PRICE = V_SOL / V_TOK;
 const SUPPLY = 1_000_000_000;
+
+/** Curve reserves implied by a price on the constant-product curve. */
+function reserves(price: number) {
+  const vTok = Math.sqrt(K / price);
+  const vSol = Math.sqrt(K * price);
+  return { realSolReserves: Math.max(0, vSol - V_SOL), realTokenReserves: Math.max(0, CURVE_TOKENS - (V_TOK - vTok)) };
+}
 
 let timers: NodeJS.Timeout[] = [];
 
@@ -60,7 +72,35 @@ function launch() {
     marketCapSol: coin.price * SUPPLY,
     ts: Date.now(),
     simulated: true,
+    curveTokens: CURVE_TOKENS,
   });
+  const tag = coin.symbol.toLowerCase();
+  const socials = Math.random();
+  setMeta(coin.mint, {
+    description: `${coin.name}: a synthetic coin from the simulation market.`,
+    twitter: socials < 0.6 ? `https://x.com/${tag}` : undefined,
+    telegram: socials < 0.35 ? `https://t.me/${tag}` : undefined,
+    website: socials < 0.2 ? `https://${tag}.example` : undefined,
+  });
+  // Most creators buy some of their own coin in the create transaction.
+  const devTokens = Math.random() < 0.8 ? SUPPLY * Math.random() * (coin.fate === "rug" ? 0.2 : 0.08) : 0;
+  if (devTokens > 0) {
+    const prev = coin.price;
+    coin.price = K / (V_TOK - devTokens) ** 2;
+    market.publish({
+      type: "trade",
+      mint: coin.mint,
+      priceSol: coin.price,
+      prevPriceSol: prev,
+      isBuy: true,
+      solAmount: Math.sqrt(K * coin.price) - V_SOL,
+      tokenAmount: devTokens,
+      ...reserves(coin.price),
+      trader: coin.creator,
+      byCreator: true,
+      venue: "pump_curve",
+    });
+  }
 }
 
 function tick() {
@@ -71,20 +111,25 @@ function tick() {
     const shock = (Math.random() - 0.5) * 0.18;
     let byCreator = false;
     if (c.fate === "rug" && c.age === c.rugAt) {
-      c.price *= 0.25;
+      c.price = Math.max(START_PRICE, c.price * 0.25);
       byCreator = true;
     } else {
-      c.price = Math.max(START_PRICE * 0.05, c.price * Math.exp(drift + shock));
+      // A curve coin cannot trade below its starting price (nothing left to sell into); a graduated one can.
+      c.price = Math.max(c.migrated ? START_PRICE * 0.05 : START_PRICE, c.price * Math.exp(drift + shock));
     }
-    const isBuy = c.price >= prev;
+    const isBuy = !byCreator && c.price >= prev;
+    const r = reserves(c.price);
+    const before = reserves(prev);
     market.publish({
       type: "trade",
       mint: c.mint,
       priceSol: c.price,
       prevPriceSol: prev,
       isBuy,
-      solAmount: Math.abs(c.price - prev) * 50_000_000,
-      trader: byCreator ? c.creator : "sim-trader",
+      solAmount: Math.abs(r.realSolReserves - before.realSolReserves) || 0.01,
+      tokenAmount: Math.abs(r.realTokenReserves - before.realTokenReserves),
+      ...(c.migrated ? {} : r),
+      trader: byCreator ? c.creator : `sim-trader-${Math.floor(Math.random() * 40)}`,
       byCreator,
       venue: c.migrated ? "pump_amm" : "pump_curve",
     });

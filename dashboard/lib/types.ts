@@ -21,12 +21,26 @@ export interface ExitRule {
   enabled: boolean;
 }
 
+export interface SnipeFilters {
+  minMarketCapSol: number;
+  maxMarketCapSol: number;
+  minLiquiditySol: number;
+  maxDevHoldPct: number;
+  skipIfDevSold: boolean;
+  requireSocials: boolean;
+  requireImage: boolean;
+  curveTriggerPct: number;
+  maxWatchSec: number;
+}
+
 export interface Settings {
   simulation: boolean;
   autoSnipe: boolean;
   autoSnipeSol: number;
   autoSnipeMaxPerHour: number;
   autoSnipeKeywords: string[];
+  filters: SnipeFilters;
+  quickBuyPresets: number[];
   slippagePct: number;
   priorityFeeMicroLamports: number;
   computeUnitLimit: number;
@@ -98,17 +112,40 @@ export interface Metrics {
   feesSol: number;
 }
 
+export interface TokenMeta {
+  image?: string;
+  description?: string;
+  twitter?: string;
+  telegram?: string;
+  website?: string;
+}
+
 export interface Launch {
   mint: string;
   name: string;
   symbol: string;
   creator: string;
-  priceSol: number;
-  marketCapSol: number;
+  uri: string;
   ts: number;
   signature?: string;
   simulated: boolean;
+  priceSol: number;
+  marketCapSol: number;
+  athMarketCapSol: number;
+  curvePct: number;
+  liquiditySol: number;
+  volumeSol: number;
+  buys: number;
+  sells: number;
+  traders: number;
+  devHoldPct: number;
+  devSold: boolean;
+  migrated: boolean;
+  spark: number[];
+  meta: TokenMeta | null;
+  metaStatus: "pending" | "ok" | "none";
   sniped?: boolean;
+  skipped?: string;
 }
 
 export interface Trade {
@@ -150,4 +187,6 @@ export interface EngineState {
   positions: Position[];
   metrics: Metrics;
   launches: Launch[];
+  /** SOL/USD spot from the engine; null when it could not fetch one. */
+  solUsd: number | null;
 }

@@ -11,6 +11,24 @@ export interface ExitRule {
   enabled: boolean;
 }
 
+export interface SnipeFilters {
+  minMarketCapSol: number;
+  maxMarketCapSol: number;
+  /** Real SOL deposited in the bonding curve. */
+  minLiquiditySol: number;
+  /** Skip coins whose creator wallet holds more than this % of supply. */
+  maxDevHoldPct: number;
+  /** Skip coins whose creator has already sold. */
+  skipIfDevSold: boolean;
+  /** Need at least one of Twitter/X, Telegram or website in the coin's metadata. */
+  requireSocials: boolean;
+  requireImage: boolean;
+  /** 0 = buy at launch. Otherwise wait until the bonding curve is at least this % complete. */
+  curveTriggerPct: number;
+  /** Stop watching a launch for the trigger after this many seconds. */
+  maxWatchSec: number;
+}
+
 export interface Settings {
   simulation: boolean;
   /** Auto-buy newly detected Pump.fun launches that pass filters. Off by default: manual snipes only. */
@@ -19,6 +37,10 @@ export interface Settings {
   autoSnipeMaxPerHour: number;
   /** Case-insensitive substrings; if non-empty a launch must match one in name or symbol. */
   autoSnipeKeywords: string[];
+  /** Conditions a new launch must meet before auto-snipe buys it. 0 disables a numeric limit. */
+  filters: SnipeFilters;
+  /** SOL amounts on the feed's one-click buy buttons. */
+  quickBuyPresets: number[];
   slippagePct: number;
   /** Compute-unit price in micro-lamports. 0 = fetch dynamically each trade. */
   priorityFeeMicroLamports: number;
@@ -57,10 +79,22 @@ export const defaultSettings: Settings = {
   autoSnipeSol: 0.1,
   autoSnipeMaxPerHour: 5,
   autoSnipeKeywords: [],
+  filters: {
+    minMarketCapSol: 0,
+    maxMarketCapSol: 0,
+    minLiquiditySol: 0,
+    maxDevHoldPct: 10,
+    skipIfDevSold: true,
+    requireSocials: false,
+    requireImage: false,
+    curveTriggerPct: 0,
+    maxWatchSec: 300,
+  },
+  quickBuyPresets: [0.1, 0.5, 1],
   slippagePct: 15,
   priorityFeeMicroLamports: 0,
   computeUnitLimit: 200_000,
-  jitoTipSol: 0.003,
+  jitoTipSol: 0.005,
   jitoTipDynamic: true,
   jitoTipMaxSol: 0.01,
   exitRules: [
@@ -84,7 +118,8 @@ export const defaultSettings: Settings = {
   },
 };
 
-let current: Settings = { ...defaultSettings, ...loadJson<Partial<Settings>>("settings.json", {}) };
+const saved = loadJson<Partial<Settings>>("settings.json", {});
+let current: Settings = { ...defaultSettings, ...saved, filters: { ...defaultSettings.filters, ...(saved.filters ?? {}) } };
 
 export function getSettings(): Settings {
   return current;
@@ -96,7 +131,11 @@ export function updateSettings(patch: Partial<Settings>): Settings {
     ...patch,
     antiRug: { ...current.antiRug, ...(patch.antiRug ?? {}) },
     safety: { ...current.safety, ...(patch.safety ?? {}) },
+    filters: { ...current.filters, ...(patch.filters ?? {}) },
   };
+  if (patch.quickBuyPresets) {
+    current.quickBuyPresets = patch.quickBuyPresets.map(Number).filter((n) => Number.isFinite(n) && n > 0).slice(0, 6);
+  }
   saveJson("settings.json", current);
   bus.changed("settings");
   return current;

@@ -4,6 +4,7 @@ import { PUMP_PROGRAM_ID, PUMP_AMM_PROGRAM_ID, PUMP_SDK, pumpIdl } from "@pump-f
 import { canonicalPumpPoolPda, pumpAmmJson } from "@pump-fun/pump-swap-sdk";
 import { log } from "./bus.js";
 import { market } from "./events.js";
+import { isTrackedLaunch } from "./feed.js";
 import { heldMints } from "./portfolio.js";
 import { connection, LAMPORTS } from "./solana.js";
 
@@ -57,13 +58,16 @@ export function onPumpLogs(l: Logs) {
           ts: Date.now(),
           signature: l.signature,
           simulated: false,
+          curveTokens: e.realTokenReserves.toNumber() / 10 ** TOKEN_DECIMALS,
         });
       } else if (d === PUMP.trade) {
         const e = PUMP_SDK.decodeTradeEventBc(buf.subarray(8));
         const mint = e.mint.toBase58();
-        if (!held.has(mint)) continue; // only price what we hold; everything else is noise
+        // Only follow coins we hold or show in the feed; the rest of Pump.fun's volume is noise here.
+        if (!held.has(mint) && !isTrackedLaunch(mint)) continue;
         const price = e.virtualSolReserves.toNumber() / LAMPORTS / (e.virtualTokenReserves.toNumber() / 10 ** TOKEN_DECIMALS);
         const prev = lastPrice.get(mint);
+        if (lastPrice.size > 5_000) lastPrice.clear(); // feed coins rotate out; keep the map bounded
         lastPrice.set(mint, price);
         market.publish({
           type: "trade",
@@ -72,6 +76,9 @@ export function onPumpLogs(l: Logs) {
           prevPriceSol: prev,
           isBuy: e.isBuy,
           solAmount: e.solAmount.toNumber() / LAMPORTS,
+          tokenAmount: e.tokenAmount.toNumber() / 10 ** TOKEN_DECIMALS,
+          realSolReserves: e.realSolReserves.toNumber() / LAMPORTS,
+          realTokenReserves: e.realTokenReserves.toNumber() / 10 ** TOKEN_DECIMALS,
           trader: e.user.toBase58(),
           byCreator: e.user.equals(e.creator),
           venue: "pump_curve",
