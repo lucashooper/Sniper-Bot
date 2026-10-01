@@ -3,11 +3,11 @@
 import { Filter, Search, SlidersHorizontal } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useEngine } from "@/lib/engine";
-import { short } from "@/lib/format";
 import { Terminal } from "@/components/terminal";
 import { FiltersPanel } from "@/components/filters-panel";
 import { TokenFeed, defaultWalletId } from "@/components/token-feed";
 import { useSettingsDraft } from "@/components/use-settings";
+import { WalletOptions, usePickedWallet } from "@/components/wallet-picker";
 import { Badge, Button, Card, Field, Input, Modal, Toggle, cx, useToast } from "@/components/ui";
 
 const LOG_FILTERS: { label: string; sources?: string[] }[] = [
@@ -54,7 +54,7 @@ function Tokens() {
   const [view, setView] = useState<(typeof VIEWS)[number]["id"]>("new");
   const [q, setQ] = useState("");
   const [custom, setCustom] = useState<number>(0.25);
-  const [walletId, setWalletId] = useState("");
+  const [walletId, setWalletId] = usePickedWallet();
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [presetText, setPresetText] = useState<string | null>(null);
 
@@ -69,7 +69,6 @@ function Tokens() {
 
   if (!state || !draft) return null;
   const live = state.status.live;
-  const wallets = state.wallets.filter((w) => w.active);
   const chosen = walletId || defaultWalletId(state);
   const presets = state.settings.quickBuyPresets ?? [0.1, 0.5, 1];
 
@@ -119,12 +118,7 @@ function Tokens() {
           <label className="flex items-center gap-2">
             <span className="text-neutral-400">Wallet</span>
             <select value={chosen} onChange={(e) => setWalletId(e.target.value)} className="h-8 rounded-lg border border-neutral-800 bg-ink-950 px-2 text-xs outline-none focus:border-violet-500/60">
-              {!live && <option value="">Paper wallet</option>}
-              {wallets.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name} · {short(w.publicKey)}
-                </option>
-              ))}
+              <WalletOptions paper={!live} />
             </select>
           </label>
           <div className="ml-auto flex items-center gap-3">

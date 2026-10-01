@@ -17,8 +17,9 @@ import {
 } from "./portfolio.js";
 import { checkMint } from "./safety.js";
 import { getSettings, updateSettings, type Settings } from "./settings.js";
-import { executeBuy, executeSell, isLive } from "./trader.js";
-import { fundWallet, getBalances, reclaimAll, refreshBalances, withdraw } from "./walletOps.js";
+import { createGroup, generateIntoGroup, listGroups, removeGroup, updateGroup } from "./groups.js";
+import { executeBuy, executeSell, isLive, sellAll } from "./trader.js";
+import { fundGroup, fundWallet, getBalances, reclaimAll, refreshBalances, withdraw } from "./walletOps.js";
 import { generateWallet, importWallet, listWallets, removeWallet, updateWallet } from "./wallets.js";
 
 type Handler = (body: any, params: Record<string, string>, url: URL) => Promise<unknown> | unknown;
@@ -48,6 +49,7 @@ route("GET", "/api/state", () => ({
   status: status(),
   settings: getSettings(),
   wallets: listWallets(),
+  groups: listGroups(),
   balances: getBalances(),
   positions: openPositions(),
   metrics: metrics(),
@@ -65,15 +67,21 @@ route("PUT", "/api/settings", (b: Partial<Settings>) => {
   return s;
 });
 
-route("GET", "/api/wallets", () => ({ wallets: listWallets(), balances: getBalances() }));
+route("GET", "/api/wallets", () => ({ wallets: listWallets(), groups: listGroups(), balances: getBalances() }));
 route("POST", "/api/wallets/import", (b) => importWallet(String(b.secret ?? ""), String(b.name ?? ""), Number(b.accountIndex ?? 0)));
 route("POST", "/api/wallets/generate", (b) => generateWallet(String(b.name ?? "")));
 route("PATCH", "/api/wallets/:id", (b, p) => updateWallet(p.id, b));
 route("DELETE", "/api/wallets/:id", (_b, p) => removeWallet(p.id));
 route("POST", "/api/wallets/refresh", async () => (await refreshBalances(), getBalances()));
 route("POST", "/api/wallets/:id/fund", (b, p) => fundWallet(p.id, Number(b.sol)));
-route("POST", "/api/wallets/reclaim", () => reclaimAll());
+route("POST", "/api/wallets/reclaim", (b) => reclaimAll(b.groupId ? String(b.groupId) : undefined));
 route("POST", "/api/wallets/:id/withdraw", (b, p) => withdraw(p.id, String(b.to ?? ""), b.sol === "max" ? "max" : Number(b.sol)));
+
+route("POST", "/api/groups", (b) => createGroup(b.name, b.walletIds));
+route("PATCH", "/api/groups/:id", (b, p) => updateGroup(p.id, b));
+route("DELETE", "/api/groups/:id", (_b, p) => removeGroup(p.id));
+route("POST", "/api/groups/:id/generate", (b, p) => generateIntoGroup(p.id, Number(b.count)));
+route("POST", "/api/groups/:id/fund", (b, p) => fundGroup(p.id, Number(b.sol)));
 
 route("POST", "/api/safety", (b) => checkMint(String(b.mint)));
 route("POST", "/api/snipe", (b) =>
@@ -83,6 +91,9 @@ route("POST", "/api/positions/:key/sell", (b, p) =>
   executeSell(decodeURIComponent(p.key), Number(b.pct ?? 100), Number(b.pct) >= 100 ? "panic" : "manual"),
 );
 
+route("POST", "/api/positions/sell-all", (b) =>
+  sellAll({ mint: b.mint ? String(b.mint) : undefined, groupId: b.groupId ? String(b.groupId) : undefined }),
+);
 route("GET", "/api/positions", () => ({ open: openPositions(), closed: closedPositions() }));
 route("GET", "/api/trades", () => trades().slice(-500).reverse());
 route("GET", "/api/pnl", (_b, _p, url) => {
