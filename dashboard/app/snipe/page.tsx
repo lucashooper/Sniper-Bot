@@ -7,6 +7,7 @@ import { short } from "@/lib/format";
 import type { ExitRule } from "@/lib/types";
 import { useSettingsDraft } from "@/components/use-settings";
 import { FiltersPanel } from "@/components/filters-panel";
+import { WalletOptions, usePickedWallet } from "@/components/wallet-picker";
 import { Badge, Button, Card, Field, Input, Modal, Toggle, cx, useToast } from "@/components/ui";
 
 interface SafetyReport {
@@ -20,7 +21,7 @@ export default function SnipePage() {
   const toast = useToast();
   const [mint, setMint] = useState("");
   const [amount, setAmount] = useState(0.25);
-  const [walletId, setWalletId] = useState("");
+  const [walletId, setWalletId] = usePickedWallet();
   const [report, setReport] = useState<SafetyReport | null>(null);
   const [checking, setChecking] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -109,10 +110,7 @@ export default function SnipePage() {
                   onChange={(e) => setWalletId(e.target.value)}
                   className="h-10 w-full rounded-xl border border-neutral-800 bg-ink-950 px-3 text-sm outline-none focus:border-violet-500/60"
                 >
-                  {!live && <option value="">Paper wallet</option>}
-                  {wallets.map((w) => (
-                    <option key={w.id} value={w.id}>{w.name} · {short(w.publicKey)}{w.isMaster ? " (master)" : ""}</option>
-                  ))}
+                  <WalletOptions paper={!live} />
                 </select>
               </Field>
             </div>

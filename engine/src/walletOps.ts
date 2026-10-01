@@ -11,6 +11,7 @@ import { hasRpc } from "./config.js";
 import { bus, log } from "./bus.js";
 import { getSettings } from "./settings.js";
 import { connection, lamports, LAMPORTS, short } from "./solana.js";
+import { getGroup } from "./groups.js";
 import { getMaster, keypairOf, listWallets } from "./wallets.js";
 
 export interface TokenBalance {
@@ -93,16 +94,46 @@ export async function fundWallet(walletId: string, solAmount: number) {
 }
 
 /**
- * For every non-master wallet: close empty token accounts (recovering ~0.002 SOL rent each) and send all SOL back
- * to the master. Token accounts that still hold tokens are left alone and reported, never sold silently.
+ * Master -> every wallet in a group, the same amount each. Transfers are packed several to a transaction, so a group
+ * of ten costs one or two network fees, not ten. The master itself is skipped if it is in the group.
  */
-export async function reclaimAll() {
+export async function fundGroup(groupId: string, solEach: number) {
   const master = getMaster();
   if (!master) throw new Error("Designate a master wallet first");
+  if (!(solEach > 0)) throw new Error("Amount must be positive");
+  const group = getGroup(groupId);
+  const targets = listWallets().filter((w) => group.walletIds.includes(w.id) && !w.isMaster);
+  if (!targets.length) throw new Error(`${group.name} has no wallets to fund besides the master`);
+  const kp = keypairOf(master.id);
+  const sigs: Array<string | null> = [];
+  const PER_TX = 12;
+  for (let i = 0; i < targets.length; i += PER_TX) {
+    const batch = targets.slice(i, i + PER_TX);
+    sigs.push(
+      await send(
+        kp,
+        batch.map((t) => SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: new PublicKey(t.publicKey), lamports: lamports(solEach) })),
+        `Fund ${batch.map((t) => t.name).join(", ")} with ${solEach} SOL each`,
+      ),
+    );
+  }
+  void refreshBalances();
+  return { funded: targets.length, totalSol: solEach * targets.length, signatures: sigs };
+}
+
+/**
+ * For every non-master wallet (or only those in `groupId`): close empty token accounts (recovering ~0.002 SOL rent
+ * each) and send all SOL back to the master. Token accounts that still hold tokens are left alone and reported,
+ * never sold silently.
+ */
+export async function reclaimAll(groupId?: string) {
+  const master = getMaster();
+  if (!master) throw new Error("Designate a master wallet first");
+  const only = groupId ? new Set(getGroup(groupId).walletIds) : null;
   const conn = connection();
   const results: Array<{ wallet: string; reclaimedSol: number; closed: number; skippedTokens: number; signature: string | null }> = [];
   for (const w of listWallets()) {
-    if (w.isMaster) continue;
+    if (w.isMaster || (only && !only.has(w.id))) continue;
     try {
       const kp = keypairOf(w.id);
       const owner = kp.publicKey;

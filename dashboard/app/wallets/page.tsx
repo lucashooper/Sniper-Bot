@@ -2,6 +2,7 @@
 
 import { ArrowDownToLine, ArrowUpFromLine, Crown, Download, Plus, RefreshCw, Send, Sparkles, Trash2, Wallet as WalletIcon } from "lucide-react";
 import { DepositDrawer } from "@/components/deposit";
+import { WalletGroups } from "@/components/wallet-groups";
 import { useState } from "react";
 import { api, useEngine } from "@/lib/engine";
 import { short } from "@/lib/format";
@@ -164,6 +165,8 @@ export default function WalletsPage() {
           </div>
         )}
       </Card>
+
+      <WalletGroups run={run} busy={busy} />
 
       <ImportModal open={importOpen} onClose={() => setImportOpen(false)} onDone={(ok) => ok && setImportOpen(false)} run={run} />
       <DepositDrawer open={depositOpen} onClose={() => setDepositOpen(false)} />

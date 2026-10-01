@@ -112,7 +112,7 @@ export const verifyOwnerToken = async (token: string) => (await checkOwnerToken(
 // ---- State backup -------------------------------------------------------------------------------------------------
 
 /** Files mirrored to Supabase. keystore.json + wallets.json must travel together: one decrypts the other. */
-const BACKED_UP = ["keystore.json", "wallets.json", "settings.json", "portfolio.json"] as const;
+const BACKED_UP = ["keystore.json", "wallets.json", "settings.json", "portfolio.json", "groups.json"] as const;
 type BackedUp = (typeof BACKED_UP)[number];
 const isBackedUp = (n: string): n is BackedUp => (BACKED_UP as readonly string[]).includes(n);
 
@@ -212,7 +212,7 @@ export async function initCloud() {
   const keysLocal = fs.existsSync(local("keystore.json")) || fs.existsSync(local("wallets.json"));
   const restored = [
     ...(!keysLocal ? (["keystore.json", "wallets.json"] as const).filter(restore) : []),
-    ...(["settings.json", "portfolio.json"] as const).filter(restore),
+    ...(["settings.json", "portfolio.json", "groups.json"] as const).filter(restore),
   ];
   if (restored.length) log.success("engine", `Restored ${restored.join(", ")} from Supabase`);
 

@@ -258,3 +258,53 @@ test("stream publishes curve trades for coins in the feed with reserves and toke
   assert.equal(t.realSolReserves, 2);
   assert.equal(t.realTokenReserves, 733_100_000);
 });
+
+test("wallet groups: create, generate into, drop removed wallets, delete keeps wallets", async () => {
+  const { createGroup, generateIntoGroup, listGroups, removeGroup, updateGroup } = await import("./groups.js");
+  const { generateWallet, listWallets, removeWallet } = await import("./wallets.js");
+  const a = generateWallet("Group A1");
+  const g = createGroup("Snipers", [a.id, a.id]);
+  assert.deepEqual(g.walletIds, [a.id], "duplicates collapse");
+  assert.throws(() => createGroup("  "), /name/);
+  assert.throws(() => createGroup("Bad", ["nope"]), /Unknown wallet/);
+  const g2 = generateIntoGroup(g.id, 3);
+  assert.equal(g2.walletIds.length, 4);
+  const names = listWallets().filter((w) => g2.walletIds.includes(w.id)).map((w) => w.name);
+  assert.deepEqual(names.slice(1), ["Snipers 2", "Snipers 3", "Snipers 4"]);
+  assert.throws(() => generateIntoGroup(g.id, 0), /between 1 and 20/);
+  removeWallet(a.id);
+  assert.equal(listGroups().find((x) => x.id === g.id)!.walletIds.includes(a.id), false);
+  assert.equal(updateGroup(g.id, { name: "Renamed" }).name, "Renamed");
+  const before = listWallets().length;
+  removeGroup(g.id);
+  assert.equal(listGroups().some((x) => x.id === g.id), false);
+  assert.equal(listWallets().length, before);
+});
+
+test("sell all exits one coin from every wallet (or one group) in simulation", async () => {
+  const { recordBuy, openPositions } = await import("./portfolio.js");
+  const { createGroup } = await import("./groups.js");
+  const { generateWallet } = await import("./wallets.js");
+  const { sellAll } = await import("./trader.js");
+  const w1 = generateWallet("S1");
+  const w2 = generateWallet("S2");
+  const w3 = generateWallet("S3");
+  const buy = (w: { id: string; name: string }, mint: string) =>
+    recordBuy(
+      { mode: "sim", reason: "manual", walletId: w.id, walletName: w.name, mint, symbol: mint.slice(0, 3), venue: "pump_curve", solAmount: 0.1, tokenAmount: 1000, priceSol: 0.0001, priorityFeeSol: 0, jitoTipSol: 0, networkFeeSol: 0 },
+      { name: mint, creator: "C", decimals: 6 },
+    );
+  [w1, w2, w3].forEach((w) => buy(w, "MintSellAll"));
+  buy(w1, "MintOther");
+  const g = createGroup("Pair", [w1.id, w2.id]);
+
+  const grouped = await sellAll({ mint: "MintSellAll", groupId: g.id });
+  assert.equal(grouped.sold, 2);
+  assert.deepEqual(openPositions().filter((p) => p.mint === "MintSellAll").map((p) => p.walletId), [w3.id]);
+
+  const rest = await sellAll({ mint: "MintSellAll" });
+  assert.equal(rest.sold, 1);
+  assert.equal(openPositions().some((p) => p.mint === "MintSellAll"), false);
+  assert.equal(openPositions().some((p) => p.mint === "MintOther"), true, "other coins are untouched");
+  await assert.rejects(sellAll({ mint: "MintSellAll" }), /No open positions/);
+});

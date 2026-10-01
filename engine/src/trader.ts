@@ -11,8 +11,10 @@ import { env, hasRpc } from "./config.js";
 import { log } from "./bus.js";
 import { dynamicPriorityFee } from "./fees.js";
 import { sendBundle, signatureOf, tipFloorSol, tipInstruction, waitForBundle } from "./jito.js";
+import { getGroup } from "./groups.js";
 import {
   findPosition,
+  openPositions,
   recordBuy,
   recordSell,
   type Position,
@@ -291,6 +293,34 @@ export async function executeSell(positionKey: string, pct: number, reason: Trad
   } finally {
     busy.delete(positionKey);
   }
+}
+
+export interface SellAllResult {
+  sold: number;
+  failed: number;
+  results: Array<{ wallet: string; symbol: string; ok: boolean; solReceived?: number; error?: string }>;
+}
+
+/**
+ * Exit fast: sells 100% of every open position matching the filters (one coin, one group, or both; neither means
+ * everything). Each wallet sells in its own Jito bundle, all at once, so one wallet that fails (empty, reverted,
+ * dropped) never holds up the others. A bundle is also capped at 5 transactions, which a big group would exceed.
+ */
+export async function sellAll(opts: { mint?: string; groupId?: string }): Promise<SellAllResult> {
+  const only = opts.groupId ? new Set(getGroup(opts.groupId).walletIds) : null;
+  const targets = openPositions().filter((p) => (!opts.mint || p.mint === opts.mint) && (!only || only.has(p.walletId)));
+  if (!targets.length) throw new Error("No open positions to sell");
+  log.warn("trade", `SELL ALL: exiting ${targets.length} position(s)${opts.mint ? ` in ${targets[0].symbol}` : ""}`);
+  const settled = await Promise.allSettled(targets.map((p) => executeSell(p.key, 100, "panic")));
+  const results = settled.map((r, i) => {
+    const p = targets[i];
+    if (r.status === "fulfilled" && r.value) return { wallet: p.walletName, symbol: p.symbol, ok: true, solReceived: r.value.solAmount };
+    const error = r.status === "rejected" ? (r.reason as Error).message : "A sell for this position was already in flight";
+    log.error("trade", `SELL ALL: ${p.symbol} from ${p.walletName} failed: ${error}`, { mint: p.mint });
+    return { wallet: p.walletName, symbol: p.symbol, ok: false, error };
+  });
+  const sold = results.filter((r) => r.ok).length;
+  return { sold, failed: results.length - sold, results };
 }
 
 function simSell(p: Position, fraction: number, reason: TradeReason) {

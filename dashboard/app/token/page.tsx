@@ -6,7 +6,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { ArrowLeft, Crown, ExternalLink, Flame, Search, ShieldAlert, Users, Zap } from "lucide-react";
 import { api, useEngine } from "@/lib/engine";
 import { accountUrl, coinPage, compact, pct, short, solscan, time } from "@/lib/format";
-import type { Position, TapeTrade, TokenDetail, Trade } from "@/lib/types";
+import type { Position, SellAllResult, TapeTrade, TokenDetail, Trade } from "@/lib/types";
 import { Avatar, CopyCa, Socials, age, defaultWalletId, money, useNow } from "@/components/token-feed";
 import { INTERVALS, TokenChart, type ChartUnit } from "@/components/token-chart";
 import { Badge, Button, Card, Empty, cx, useToast } from "@/components/ui";
@@ -449,6 +449,20 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
     }
   };
 
+  const sellEverywhere = async () => {
+    if (!confirm(`${positions.some((p) => p.mode === "live") ? "LIVE: " : ""}Sell 100% of ${symbol} from all ${positions.length} wallets?`)) return;
+    setBusy("all");
+    try {
+      const r = await api<SellAllResult>("/api/positions/sell-all", { method: "POST", body: { mint } });
+      if (r.failed) toast.show(`Sold ${r.sold}, ${r.failed} failed: ${r.results.find((x) => !x.ok)?.error ?? "see the log"}`, "err");
+      else toast.show(`Sold ${symbol} from ${r.sold} wallets`);
+    } catch (e) {
+      toast.show((e as Error).message, "err");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <Card>
       {toast.node}
@@ -534,12 +548,22 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
                     </button>
                   ))}
                 </div>
+                {positions.length > 1 && (
+                  <Button variant="danger" size="sm" className="w-full" disabled={busy !== null} onClick={() => void sellEverywhere()}>
+                    <Flame size={13} /> {busy === "all" ? "Selling…" : `Sell all from ${positions.length} wallets`}
+                  </Button>
+                )}
                 <p className="text-[11px] text-neutral-500">Sells go out at market with your slippage, priority fee and Jito tip. Take-profit and stop-loss rules keep running on what is left.</p>
               </>
             ) : (
               <div className="rounded-xl border border-dashed border-neutral-800 px-3 py-6 text-center text-xs text-neutral-500">
                 {positions.length ? "No position from this wallet; pick the wallet that holds it." : `You hold no ${symbol}.`}
               </div>
+            )}
+            {!pos && positions.length > 1 && (
+              <Button variant="danger" size="sm" className="w-full" disabled={busy !== null} onClick={() => void sellEverywhere()}>
+                <Flame size={13} /> {busy === "all" ? "Selling…" : `Sell all from ${positions.length} wallets`}
+              </Button>
             )}
           </div>
         )}

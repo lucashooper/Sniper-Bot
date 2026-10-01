@@ -1,10 +1,11 @@
 "use client";
 
-import { Flame, PackageOpen } from "lucide-react";
+import { Flame, Layers, PackageOpen } from "lucide-react";
 import { useState } from "react";
 import { api, useEngine } from "@/lib/engine";
 import Link from "next/link";
 import { coinPage, compact, pct, price, signed } from "@/lib/format";
+import type { SellAllResult } from "@/lib/types";
 import { Badge, Button, Empty, Td, Th, cx, useToast } from "./ui";
 
 export function PositionsTable() {
@@ -25,12 +26,39 @@ export function PositionsTable() {
     }
   };
 
+  /** Sells 100% from every wallet holding `mint` (or every open position when no mint), each wallet at once. */
+  const sellAll = async (mint?: string) => {
+    const hit = positions.filter((p) => !mint || p.mint === mint);
+    const live = hit.some((p) => p.mode === "live");
+    const what = mint ? `${hit[0]?.symbol} from all ${hit.length} wallets` : `all ${hit.length} open positions`;
+    if (!confirm(`${live ? "LIVE: " : ""}Sell 100% of ${what}?`)) return;
+    setBusy(`all:${mint ?? ""}`);
+    try {
+      const r = await api<SellAllResult>("/api/positions/sell-all", { method: "POST", body: mint ? { mint } : {} });
+      if (r.failed) toast.show(`Sold ${r.sold}, ${r.failed} failed: ${r.results.find((x) => !x.ok)?.error ?? "see the log"}`, "err");
+      else toast.show(`Sold ${what}`);
+    } catch (e) {
+      toast.show((e as Error).message, "err");
+    } finally {
+      setBusy(null);
+    }
+  };
+  const holders = new Map<string, number>();
+  positions.forEach((p) => holders.set(p.mint, (holders.get(p.mint) ?? 0) + 1));
+
   if (!positions.length) {
     return <Empty icon={<PackageOpen size={20} />} title="No open positions">Snipe a token or enable auto-snipe and positions will stream in here with live prices.</Empty>;
   }
   return (
     <div className="overflow-x-auto scrollbar-thin">
       {toast.node}
+      {positions.length > 1 && (
+        <div className="flex justify-end px-4 pt-3">
+          <Button size="sm" variant="danger" disabled={!!busy} onClick={() => sellAll()}>
+            <Flame size={13} /> Sell everything ({positions.length})
+          </Button>
+        </div>
+      )}
       <table className="w-full min-w-[820px]">
         <thead className="border-b border-neutral-800">
           <tr>
@@ -76,6 +104,11 @@ export function PositionsTable() {
                     <Button size="sm" variant="danger" disabled={!!busy} onClick={() => sell(p.key, 100)}>
                       <Flame size={13} /> Panic 100%
                     </Button>
+                    {(holders.get(p.mint) ?? 0) > 1 && (
+                      <Button size="sm" variant="danger" disabled={!!busy} title={`Sell ${p.symbol} from every wallet holding it`} onClick={() => sellAll(p.mint)}>
+                        <Layers size={13} /> All {holders.get(p.mint)} wallets
+                      </Button>
+                    )}
                   </div>
                 </Td>
               </tr>
