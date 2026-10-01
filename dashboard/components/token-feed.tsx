@@ -144,7 +144,6 @@ export function useQuickBuy(walletId: string) {
   const [busy, setBusy] = useState<string | null>(null);
   const buy = async (l: Launch, sol: number) => {
     if (!state || !(sol > 0)) return;
-    if (state.status.live && !confirm(`LIVE: buy ${sol} SOL of ${l.symbol} with real funds?`)) return;
     setBusy(`${l.mint}:${sol}`);
     try {
       await api("/api/snipe", { method: "POST", body: { mint: l.mint, walletId, sol } });

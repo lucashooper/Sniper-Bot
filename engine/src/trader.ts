@@ -8,7 +8,7 @@ import {
 } from "@solana/web3.js";
 import { createCloseAccountInstruction, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { env, hasRpc } from "./config.js";
-import { log } from "./bus.js";
+import { DetailedError, log } from "./bus.js";
 import { dynamicPriorityFee } from "./fees.js";
 import { sendBundle, signatureOf, tipFloorSol, tipInstruction, waitForBundle } from "./jito.js";
 import { getGroup } from "./groups.js";
@@ -145,6 +145,34 @@ export interface BuyRequest {
   meta?: { name?: string; symbol?: string; creator?: string };
 }
 
+/** Rough upper bound for a token account's rent (Token-2022 accounts with extensions run slightly above SPL's 0.00204). */
+const ACCOUNT_RENT_SOL = 0.0021;
+
+/**
+ * Refuses a live buy the wallet cannot pay for, with the numbers, before building or sending anything. The chain
+ * would reject it anyway, but only after the tip and fees were spent on a failed bundle, with a vaguer error.
+ */
+async function ensureFunds(walletName: string, owner: PublicKey, sol: number, mint: string) {
+  const s = getSettings();
+  const balance = (await connection().getBalance(owner, "confirmed")) / LAMPORTS;
+  const tip = await tipSol(false);
+  const priority = ((s.priorityFeeMicroLamports || 100_000) * s.computeUnitLimit) / 1e6 / LAMPORTS;
+  const need = sol + tip + priority + ACCOUNT_RENT_SOL + 0.00001;
+  if (balance >= need) return;
+  const parts = `${sol} buy + ${tip} Jito tip + ~${priority.toFixed(4)} priority fee + up to ${ACCOUNT_RENT_SOL} token account rent`;
+  throw new DetailedError(`Not enough SOL in ${walletName}: it has ${balance.toFixed(4)} SOL, this buy needs about ${need.toFixed(4)} SOL (${parts})`, {
+    stage: "balance",
+    mint,
+    wallet: owner.toBase58(),
+    balanceSol: balance,
+    neededSol: need,
+    buySol: sol,
+    jitoTipSol: tip,
+    priorityFeeSol: priority,
+    accountRentSol: ACCOUNT_RENT_SOL,
+  });
+}
+
 export async function executeBuy(req: BuyRequest) {
   const s = getSettings();
   const live = isLive();
@@ -155,8 +183,24 @@ export async function executeBuy(req: BuyRequest) {
   busy.add(key);
   try {
     if (!isSimMint(req.mint) && !hasRpc()) throw new Error("Real mints need SOLANA_RPC_URL; in simulation without RPC only synthetic launches can be traded");
-    const report = await checkMint(req.mint);
-    if (!report.ok) throw new Error("Safety checks failed; see the log for details");
+    if (live) {
+      // Cheapest and most common failure first: a wallet that cannot cover the buy plus tip, fees and rent.
+      const fw = getWallet(walletId);
+      if (!fw) throw new Error("Select a wallet for live trading");
+      await ensureFunds(fw.name, keypairOf(walletId).publicKey, req.sol, req.mint);
+    }
+    const report = await checkMint(req.mint).catch((e) => {
+      throw new DetailedError(`Safety check could not run: ${(e as Error).message}`, { stage: "safety", mint: req.mint });
+    });
+    if (!report.ok) {
+      const failed = report.checks.filter((c) => !c.pass);
+      throw new DetailedError(`Safety check failed: ${failed.map((c) => `${c.name}: ${c.detail}`).join("; ")}`, {
+        stage: "safety",
+        mint: req.mint,
+        failed,
+        checks: report.checks,
+      });
+    }
 
     const sc = simCoin(req.mint);
     const symbol = req.meta?.symbol ?? sc?.symbol ?? req.mint.slice(0, 4);

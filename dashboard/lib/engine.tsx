@@ -55,8 +55,32 @@ export async function api<T = unknown>(path: string, init?: { method?: string; b
     body: init?.body === undefined ? undefined : JSON.stringify(init.body),
   });
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((json as { error?: string }).error ?? `HTTP ${res.status}`);
+  if (!res.ok) {
+    const { error, details } = json as { error?: string; details?: Record<string, unknown> };
+    const err = new ApiError(error ?? `HTTP ${res.status}`, res.status, `${init?.method ?? "GET"} ${path}`, details, init?.body);
+    // Everything the engine said about the failure, for the browser console (the toast shows the message only).
+    console.groupCollapsed(`[engine] ${err.request} failed (${res.status}): ${err.message}`);
+    console.error(err.message);
+    if (init?.body !== undefined) console.info("request", init.body);
+    if (details) console.info("details", details);
+    if (Array.isArray(details?.failed)) console.table(details.failed);
+    console.groupEnd();
+    throw err;
+  }
   return json as T;
+}
+
+/** A failed engine call: the engine's own message plus, when it sends them, the facts behind it (failed checks, balances). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public request: string,
+    public details?: Record<string, unknown>,
+    public body?: unknown,
+  ) {
+    super(message);
+  }
 }
 
 /** Downloads the trades CSV with the auth header (a plain link cannot carry it). */

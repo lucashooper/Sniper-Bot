@@ -424,7 +424,6 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
 
   const buy = async (n: number) => {
     if (!(n > 0)) return toast.show("Enter an amount in SOL", "err");
-    if (live && !confirm(`LIVE: buy ${n} SOL of ${symbol} with real funds?`)) return;
     setBusy("buy");
     try {
       await api("/api/snipe", { method: "POST", body: { mint, walletId: chosen, sol: n } });
@@ -437,7 +436,6 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
   };
   const sell = async (p: number) => {
     if (!pos) return;
-    if (live && !confirm(`LIVE: sell ${p}% of your ${symbol} from ${pos.walletName}?`)) return;
     setBusy(`sell${p}`);
     try {
       await api(`/api/positions/${encodeURIComponent(pos.key)}/sell`, { method: "POST", body: { pct: p } });
@@ -450,7 +448,6 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
   };
 
   const sellEverywhere = async () => {
-    if (!confirm(`${positions.some((p) => p.mode === "live") ? "LIVE: " : ""}Sell 100% of ${symbol} from all ${positions.length} wallets?`)) return;
     setBusy("all");
     try {
       const r = await api<SellAllResult>("/api/positions/sell-all", { method: "POST", body: { mint } });

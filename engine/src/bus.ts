@@ -41,3 +41,13 @@ export const log = {
   error: (s: LogSource, m: string, e?: Partial<LogLine>) => bus.log("error", s, m, e),
   debug: (s: LogSource, m: string, e?: Partial<LogLine>) => bus.log("debug", s, m, e),
 };
+
+/**
+ * An error that carries the facts behind it (which check failed, the numbers it compared) so the API can return
+ * them to the dashboard, which shows the message and logs the details to the browser console.
+ */
+export class DetailedError extends Error {
+  constructor(message: string, public details: Record<string, unknown>) {
+    super(message);
+  }
+}

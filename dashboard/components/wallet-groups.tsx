@@ -27,8 +27,6 @@ export function WalletGroups({ run, busy }: { run: Run; busy: boolean }) {
   const sellAll = (g: WalletGroup) => {
     const held = state.positions.filter((p) => g.walletIds.includes(p.walletId));
     if (!held.length) return;
-    const live = held.some((p) => p.mode === "live");
-    if (!confirm(`${live ? "LIVE: " : ""}Sell 100% of all ${held.length} position(s) held by ${g.name}?`)) return;
     void run(async () => {
       const r = await api<SellAllResult>("/api/positions/sell-all", { method: "POST", body: { groupId: g.id } });
       if (r.failed) throw new Error(`Sold ${r.sold}, ${r.failed} failed: ${r.results.find((x) => !x.ok)?.error ?? "see the log"}`);
