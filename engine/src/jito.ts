@@ -103,13 +103,4 @@ export async function bundleStatus(bundleId: string): Promise<{ status: Inflight
   return v ? { status: v.status, slot: v.landed_slot ?? undefined } : null;
 }
 
-/**
- * Jito's sendTransaction: forwards one signed transaction straight to the leader. Re-sending a transaction that is
- * already in a bundle is safe: it carries the same signature, and Solana executes a signature at most once.
- */
-export async function sendTransaction(tx: VersionedTransaction): Promise<string> {
-  const encoded = Buffer.from(tx.serialize()).toString("base64");
-  return rpc<string>("/api/v1/transactions", "sendTransaction", [encoded, { encoding: "base64" }]);
-}
-
 export const signatureOf = (tx: VersionedTransaction) => bs58.encode(tx.signatures[0]);

@@ -49,6 +49,12 @@ export interface Settings {
   /** When true, use the live Jito tip floor (75th percentile) if it is above jitoTipSol, capped at jitoTipMaxSol. */
   jitoTipDynamic: boolean;
   jitoTipMaxSol: number;
+  /**
+   * How live orders are sent. "fast": one transaction to Helius Sender (routes to Jito and staked validators at once)
+   * and the RPC in parallel, landing with any leader. "protected": a private Jito bundle only (no sandwich exposure,
+   * but only Jito leaders can include it and Jito may drop it).
+   */
+  sendMode: "fast" | "protected";
   exitRules: ExitRule[];
   antiRug: {
     enabled: boolean;
@@ -97,6 +103,7 @@ export const defaultSettings: Settings = {
   jitoTipSol: 0.005,
   jitoTipDynamic: true,
   jitoTipMaxSol: 0.01,
+  sendMode: "fast",
   exitRules: [
     { id: "tp1", kind: "take_profit", triggerPct: 100, sellPct: 50, enabled: true },
     { id: "tp2", kind: "take_profit", triggerPct: 200, sellPct: 50, enabled: true },
