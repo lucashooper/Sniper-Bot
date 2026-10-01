@@ -79,3 +79,6 @@ create policy "owner reads trades" on public.trade_logs
 
 revoke insert, update, delete on public.wallets, public.bot_settings, public.trade_logs from anon, authenticated;
 revoke all on public.wallets, public.bot_settings, public.trade_logs from anon;
+
+-- Make the API see the new tables right away.
+notify pgrst, 'reload schema';

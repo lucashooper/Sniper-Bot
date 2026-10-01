@@ -43,7 +43,7 @@ export async function diagnose(url: string, token?: string): Promise<Check[]> {
     const r = await fetch(`${url}/health`, { signal: timeout(10_000), cache: "no-store" });
     health = await r.json().catch(() => null);
     if (health?.startupError) {
-      add("Engine responds", false, `The engine is running but failed to start: ${health.startupError}. Fix that variable on the engine host (Railway → Variables); it redeploys by itself.`);
+      add("Engine responds", false, `The engine is running but failed to start: ${health.startupError.replace(/\.+$/, "")}. Once that is fixed the engine starts by itself within about 20 seconds (a changed Railway variable redeploys it).`);
       return out;
     }
     if (!r.ok || !health?.ok) {
