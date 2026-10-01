@@ -2,8 +2,9 @@
 
 import { Check, Copy, ExternalLink, Globe, Rocket, Send, ShieldAlert, Users, Zap } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { memo, useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api, useEngine } from "@/lib/engine";
+import { prefetchToken } from "@/lib/token-cache";
 import { coinPage, short, tokenUrl } from "@/lib/format";
 import type { Launch } from "@/lib/types";
 import { Badge, Empty, cx, useToast } from "./ui";
@@ -235,6 +236,8 @@ export function TokenFeed({
   const { buy, busy, toastNode } = useQuickBuy(walletId);
   const router = useRouter();
   const open = useCallback((mint: string) => router.push(coinPage(mint)), [router]);
+  // Load the coin page's code (and its chart library) ahead of the first click.
+  useEffect(() => router.prefetch("/token/"), [router]);
   const presetKey = presets.join(",");
   const amounts = useMemo(() => {
     const a = presetKey ? presetKey.split(",").map(Number) : [];
@@ -314,6 +317,7 @@ const Row = memo(function Row({
         if ((e.target as HTMLElement).closest("button, a")) return;
         onOpen(l.mint);
       }}
+      onPointerDown={(e) => !(e.target as HTMLElement).closest("button, a") && prefetchToken(l.mint)}
       className="group cursor-pointer border-b border-white/[0.04] transition-colors hover:bg-white/[0.025]"
     >
       <td className="px-4 py-2.5">
