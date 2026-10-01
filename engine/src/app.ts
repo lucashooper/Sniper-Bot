@@ -28,7 +28,7 @@ export async function start() {
     void refreshBalances();
     setInterval(() => void refreshBalances(), 20_000);
   } else {
-    log.warn("engine", "SOLANA_RPC_URL not set: running the synthetic market so you can try the bot end to end");
+    log.warn("engine", "No RPC URL set (SOLANA_RPC_URL, or RPC_URL): running the synthetic market. Real coins, images and wallet balances need it");
     startSimMarket();
   }
 }
