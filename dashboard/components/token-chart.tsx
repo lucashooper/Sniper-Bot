@@ -178,7 +178,7 @@ export function TokenChart({
     // New trades only touch the last candle or add one: update those instead of redrawing the whole series.
     const dataKey = `${creator}:${intervalSec}:${unit}:${value(1)}:${data[0]?.time ?? 0}`;
     const prev = drawn.current;
-    if (prev.key === dataKey && prev.len > 0 && data.length >= prev.len) {
+    if (prev.key === dataKey && prev.len > 0 && data.length >= prev.len && data.length - prev.len < 50) {
       for (const c of data.slice(prev.len - 1)) {
         s.update(bar(c));
         v.update(vol(c));
@@ -205,7 +205,8 @@ export function TokenChart({
     markers.current?.setMarkers(m.sort((a, b) => (a.time as number) - (b.time as number)));
 
     // Re-fit when the coin, interval or unit changes; otherwise keep the user's zoom and follow the newest candle.
-    const key = `${creator}:${intervalSec}:${unit}`;
+    // Also re-fit once the first trades arrive (the page can open on the feed's copy before the tape loads).
+    const key = `${creator}:${intervalSec}:${unit}:${trades.length > 0}`;
     if (fitKey.current !== key) {
       fitKey.current = key;
       // A fixed window of ~90 candles keeps candle width steady instead of stretching a young coin's 3 candles across the chart.
