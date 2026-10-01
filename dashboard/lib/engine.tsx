@@ -4,7 +4,14 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { accessToken, supabaseEnabled } from "./supabase";
 import type { EngineState, LogLine } from "./types";
 
-export const DEFAULT_URL = (process.env.NEXT_PUBLIC_ENGINE_URL || "http://127.0.0.1:8787").replace(/\/$/, "");
+/** Accepts "host", "host/" or a full URL; a bare host gets https:// (what Railway's domains need). */
+export function normalizeUrl(raw: string) {
+  const u = raw.trim().replace(/\/+$/, "");
+  if (!u) return u;
+  return /^https?:\/\//i.test(u) ? u : `${/^(localhost|127\.0\.0\.1)(:|$)/.test(u) ? "http" : "https"}://${u}`;
+}
+
+export const DEFAULT_URL = normalizeUrl(process.env.NEXT_PUBLIC_ENGINE_URL || "http://127.0.0.1:8787");
 
 export function readConn() {
   if (typeof window === "undefined") return { url: DEFAULT_URL, token: "" };
@@ -13,7 +20,7 @@ export function readConn() {
     // A localhost address saved while testing locally is never right for the deployed https site.
     const stale = window.location.protocol === "https:" && /\/\/(127\.0\.0\.1|localhost)/.test(saved);
     return {
-      url: (!stale && saved) || DEFAULT_URL,
+      url: (!stale && normalizeUrl(saved)) || DEFAULT_URL,
       token: localStorage.getItem("engine.token") || "",
     };
   } catch {

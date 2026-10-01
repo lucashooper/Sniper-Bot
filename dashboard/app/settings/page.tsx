@@ -2,7 +2,7 @@
 
 import { AlertTriangle, CheckCircle2, CircleDashed } from "lucide-react";
 import { useEffect, useState } from "react";
-import { DEFAULT_URL, saveConn, useEngine } from "@/lib/engine";
+import { DEFAULT_URL, normalizeUrl, saveConn, useEngine } from "@/lib/engine";
 import { supabaseEnabled } from "@/lib/supabase";
 import { useAuth } from "@/components/auth-gate";
 import { ModeSwitch } from "@/components/mode-switch";
@@ -110,7 +110,7 @@ export default function SettingsPage() {
                 <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} className="font-mono text-xs" />
               </Field>
             )}
-            <Button onClick={() => (saveConn(url.replace(/\/$/, ""), token), reconnect(), toast.show("Reconnecting"))}>Save &amp; reconnect</Button>
+            <Button onClick={() => (saveConn(normalizeUrl(url), token), reconnect(), toast.show("Reconnecting"))}>Save &amp; reconnect</Button>
             {s?.cloud?.enabled && (
               <div className="text-xs text-neutral-500">Last Supabase backup: <span className="text-neutral-300">{s.cloud.lastBackupAt ? new Date(s.cloud.lastBackupAt).toLocaleString() : "pending"}</span></div>
             )}
