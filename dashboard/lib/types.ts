@@ -144,6 +144,8 @@ export interface Launch {
   simulated: boolean;
   priceSol: number;
   marketCapSol: number;
+  /** Market cap when the coin was created: where its chart starts. */
+  launchMarketCapSol: number;
   athMarketCapSol: number;
   curvePct: number;
   liquiditySol: number;
@@ -160,6 +162,40 @@ export interface Launch {
   sniped?: boolean;
   skipped?: string;
 }
+
+export interface TapeTrade {
+  seq: number;
+  ts: number;
+  priceSol: number;
+  isBuy: boolean;
+  solAmount: number;
+  tokenAmount: number;
+  trader: string;
+  byCreator: boolean;
+  signature?: string;
+}
+
+export interface Holder {
+  address: string;
+  tokens: number;
+  pct: number;
+  isCreator: boolean;
+}
+
+/** GET /api/token/:mint. Untracked coins (launched before the engine started, or long gone from the feed) carry only solUsd. */
+export type TokenDetail =
+  | { tracked: false; solUsd: number | null }
+  | {
+      tracked: true;
+      launch: Launch;
+      trades: TapeTrade[];
+      firstSeq: number;
+      lastSeq: number;
+      holders: Holder[];
+      holderCount: number;
+      top10Pct: number;
+      solUsd: number | null;
+    };
 
 export interface Trade {
   id: string;

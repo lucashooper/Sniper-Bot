@@ -10,7 +10,7 @@ import { executeBuy, executeSell, isLive, PAPER_WALLET } from "./trader.js";
 import { listWallets } from "./wallets.js";
 import { short } from "./solana.js";
 import { trackPool, watchSupply } from "./stream.js";
-import { addLaunch, applyTrade, getLaunch, hasSocials, loadMeta, markLaunch, markMigrated, onMetaSettled, type Launch } from "./feed.js";
+import { addLaunch, applyTrade, getLaunch, hasSocials, loadMeta, markLaunch, markMigrated, onMetaSettled, setRetainer, type Launch } from "./feed.js";
 import type { SnipeFilters } from "./settings.js";
 
 const autoSnipeTimes: number[] = [];
@@ -175,6 +175,8 @@ async function pollLivePositions() {
 
 export function startEngine() {
   market.subscribe(onEvent);
+  // Held coins keep their chart and live stats after they scroll out of the launch feed.
+  setRetainer((mint) => positionsForMint(mint).length > 0);
   // Quiet coins get no trades to re-check on; sweep so their watch window still expires.
   setInterval(() => watching.forEach((m) => considerAutoSnipe(m)), 5_000);
   if (hasRpc()) {

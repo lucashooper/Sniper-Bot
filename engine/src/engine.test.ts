@@ -152,6 +152,39 @@ test("feed tracks curve progress, dev holdings and liquidity from trades", async
   assert.equal(getLaunch(mint)!.curvePct, 100);
 });
 
+test("coin page detail: trade tape, incremental fetch and holders from net buys", async () => {
+  const { addLaunch, applyTrade, tokenDetail } = await import("./feed.js");
+  const mint = Keypair.generate().publicKey.toBase58();
+  addLaunch({ mint, name: "Tape", symbol: "TAPE", uri: "", creator: "dev", priceSol: 3e-8, marketCapSol: 30, ts: Date.now(), simulated: false });
+  applyTrade({ mint, priceSol: 3.2e-8, isBuy: true, solAmount: 1, tokenAmount: 40_000_000, trader: "dev", byCreator: true });
+  applyTrade({ mint, priceSol: 4e-8, isBuy: true, solAmount: 3, tokenAmount: 80_000_000, trader: "a", byCreator: false });
+  applyTrade({ mint, priceSol: 3.8e-8, isBuy: false, solAmount: 1, tokenAmount: 80_000_000, trader: "a", byCreator: false, signature: "sig3" });
+  const d = tokenDetail(mint)!;
+  assert.equal(d.trades.length, 3);
+  assert.deepEqual(d.trades.map((t) => t.seq), [1, 2, 3]);
+  assert.equal(d.lastSeq, 3);
+  assert.equal(tokenDetail(mint, 2)!.trades.length, 1);
+  assert.equal(tokenDetail(mint, 2)!.trades[0].signature, "sig3");
+  // "a" sold everything, so only the dev is left holding 4%.
+  assert.equal(d.holderCount, 1);
+  assert.equal(d.holders[0].isCreator, true);
+  assert.ok(Math.abs(d.holders[0].pct - 4) < 1e-9);
+  assert.equal(tokenDetail("unknown-mint"), null);
+});
+
+test("a coin open on its page stays tracked after it scrolls out of the feed", async () => {
+  const { addLaunch, tokenDetail, getLaunch, _resetFeed } = await import("./feed.js");
+  _resetFeed();
+  const add = (mint: string) => addLaunch({ mint, name: mint, symbol: mint, uri: "", creator: "c", priceSol: 3e-8, marketCapSol: 30, ts: Date.now(), simulated: true });
+  add("viewed");
+  add("ignored");
+  tokenDetail("viewed");
+  for (let i = 0; i < 150; i++) add(`filler-${i}`);
+  assert.ok(getLaunch("viewed"), "viewed coin should be kept");
+  assert.equal(getLaunch("ignored"), undefined);
+  _resetFeed();
+});
+
 test("metadata parsing keeps only http(s) links and normalises socials", async () => {
   const { parseMeta, hasSocials } = await import("./feed.js");
   const m = parseMeta({ image: "ipfs://QmImage", twitter: "@coin", telegram: "t.me/coin", website: "javascript:alert(1)" });

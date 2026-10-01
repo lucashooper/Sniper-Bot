@@ -3,7 +3,8 @@
 import { Flame, Layers, PackageOpen } from "lucide-react";
 import { useState } from "react";
 import { api, useEngine } from "@/lib/engine";
-import { compact, pct, price, signed, tokenUrl } from "@/lib/format";
+import Link from "next/link";
+import { coinPage, compact, pct, price, signed } from "@/lib/format";
 import type { SellAllResult } from "@/lib/types";
 import { Badge, Button, Empty, Td, Th, cx, useToast } from "./ui";
 
@@ -79,7 +80,7 @@ export function PositionsTable() {
             return (
               <tr key={p.key} className="transition hover:bg-neutral-900/60">
                 <Td>
-                  <a href={tokenUrl(p.mint)} target="_blank" rel="noreferrer" className="font-medium hover:text-violet-300">{p.symbol}</a>
+                  <Link href={coinPage(p.mint)} className="font-medium hover:text-violet-300">{p.symbol}</Link>
                   <div className="mt-0.5 flex items-center gap-1.5">
                     <span className="max-w-[140px] truncate text-xs text-neutral-500">{p.name}</span>
                     {p.mode === "sim" && <Badge tone="violet">SIM</Badge>}

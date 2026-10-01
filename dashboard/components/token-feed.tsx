@@ -1,15 +1,16 @@
 "use client";
 
 import { Check, Copy, ExternalLink, Globe, Rocket, Send, ShieldAlert, Users, Zap } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { api, useEngine } from "@/lib/engine";
-import { short, tokenUrl } from "@/lib/format";
+import { coinPage, short, tokenUrl } from "@/lib/format";
 import type { Launch } from "@/lib/types";
 import { Badge, Empty, cx, useToast } from "./ui";
 
 /* ---------------------------------------------------------------- formatting */
 
-const money = (n: number, prefix = "$") =>
+export const money = (n: number, prefix = "$") =>
   `${prefix}${n >= 1e9 ? `${(n / 1e9).toFixed(2)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : n.toFixed(n >= 100 ? 0 : 2)}`;
 
 /** USD when the engine knows the SOL price, otherwise SOL. */
@@ -19,7 +20,7 @@ export function useValue() {
   return (sol: number) => (usd ? money(sol * usd) : `${money(sol, "")} SOL`);
 }
 
-function age(ts: number, now: number) {
+export function age(ts: number, now: number) {
   const s = Math.max(0, Math.floor((now - ts) / 1000));
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m`;
@@ -39,7 +40,7 @@ export function useNow(ms = 1000) {
 /* ---------------------------------------------------------------- pieces */
 
 const HUES = [262, 160, 200, 330, 30, 280, 190, 0];
-function Avatar({ l, size = 52 }: { l: Launch; size?: number }) {
+export function Avatar({ l, size = 52 }: { l: Launch; size?: number }) {
   const [broken, setBroken] = useState(false);
   const hue = HUES[l.mint.charCodeAt(0) % HUES.length];
   const pct = Math.max(2, l.curvePct);
@@ -83,7 +84,7 @@ function Spark({ points, up }: { points: number[]; up: boolean }) {
   );
 }
 
-function CopyCa({ mint }: { mint: string }) {
+export function CopyCa({ mint }: { mint: string }) {
   const [done, setDone] = useState(false);
   return (
     <button
@@ -102,13 +103,13 @@ function CopyCa({ mint }: { mint: string }) {
   );
 }
 
-const XIcon = () => (
+export const XIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
     <path d="M18.9 2H22l-6.8 7.8L23 22h-6.2l-4.8-6.3L6.4 22H3.3l7.3-8.3L1 2h6.3l4.4 5.8L18.9 2Zm-1.1 18h1.7L6.3 3.9H4.5L17.8 20Z" />
   </svg>
 );
 
-function Socials({ l }: { l: Launch }) {
+export function Socials({ l }: { l: Launch }) {
   const m = l.meta;
   const link = (href: string | undefined, icon: React.ReactNode, title: string) =>
     href ? (
@@ -182,6 +183,7 @@ export function TokenFeed({
   const now = useNow();
   const value = useValue();
   const { buy, busy, toastNode } = useQuickBuy(walletId);
+  const router = useRouter();
   const amounts = useMemo(() => {
     const a = [...presets];
     if (custom && custom > 0 && !a.includes(custom)) a.push(custom);
@@ -210,13 +212,21 @@ export function TokenFeed({
             const start = l.spark[0] || l.marketCapSol;
             const change = start ? (l.marketCapSol / start - 1) * 100 : 0;
             return (
-              <tr key={l.mint} className="group transition hover:bg-white/[0.02]">
+              <tr
+                key={l.mint}
+                onClick={(e) => {
+                  // Copy, socials and quick-buy handle their own clicks; anywhere else on the row opens the coin page.
+                  if ((e.target as HTMLElement).closest("button, a")) return;
+                  router.push(coinPage(l.mint));
+                }}
+                className="group cursor-pointer transition hover:bg-white/[0.03]"
+              >
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-3">
                     <Avatar l={l} size={compactRows ? 40 : 52} />
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <span className="font-semibold text-neutral-100">{l.symbol}</span>
+                        <span className="font-semibold text-neutral-100 group-hover:text-violet-200">{l.symbol}</span>
                         <span className="max-w-[120px] truncate text-sm text-neutral-500">{l.name}</span>
                         <CopyCa mint={l.mint} />
                       </div>
