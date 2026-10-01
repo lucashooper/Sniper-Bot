@@ -73,6 +73,19 @@ export interface Wallet {
   createdAt: number;
 }
 
+export interface WalletGroup {
+  id: string;
+  name: string;
+  walletIds: string[];
+  createdAt: number;
+}
+
+export interface SellAllResult {
+  sold: number;
+  failed: number;
+  results: { wallet: string; symbol: string; ok: boolean; solReceived?: number; error?: string }[];
+}
+
 export interface WalletBalance {
   sol: number;
   tokens: { mint: string; amount: number; program: string }[];
@@ -183,6 +196,8 @@ export interface EngineState {
   status: Status;
   settings: Settings;
   wallets: Wallet[];
+  /** Missing on engines older than wallet groups. */
+  groups?: WalletGroup[];
   balances: Record<string, WalletBalance>;
   positions: Position[];
   metrics: Metrics;
