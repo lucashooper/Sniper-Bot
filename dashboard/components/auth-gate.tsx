@@ -1,6 +1,6 @@
 "use client";
 
-import type { Session } from "@supabase/supabase-js";
+import type { Session } from "@supabase/auth-js";
 import { Crosshair, Lock } from "lucide-react";
 import { createContext, useContext, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
@@ -50,7 +50,7 @@ function SignIn() {
 
   return (
     <div className="grid min-h-screen place-items-center px-4">
-      <form onSubmit={submit} className="glass w-full max-w-sm space-y-5 rounded-2xl border border-neutral-800 bg-ink-900/80 p-6">
+      <form onSubmit={submit} className="glass w-full max-w-sm space-y-5 rounded-2xl border border-white/[0.07] bg-ink-900/80 p-6">
         <div className="flex items-center gap-3">
           <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-violet-500 to-emerald-400 text-ink-950">
             <Crosshair size={20} strokeWidth={2.5} />

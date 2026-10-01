@@ -60,7 +60,7 @@ export function WalletGroups({ run, busy }: { run: Run; busy: boolean }) {
             const positions = state.positions.filter((p) => g.walletIds.includes(p.walletId));
             const fundable = members.filter((w) => !w.isMaster).length;
             return (
-              <div key={g.id} className="rounded-xl border border-neutral-800 bg-ink-950/60 p-4">
+              <div key={g.id} className="rounded-xl border border-white/[0.07] bg-ink-950/60 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="truncate font-semibold">{g.name}</div>
@@ -184,9 +184,9 @@ function EditGroupModal({ group, onClose, run }: { group: WalletGroup | "new" | 
       <Field label="Name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Snipers A" maxLength={40} /></Field>
       <Field label="Wallets" hint="A wallet can be in more than one group. Leave it empty and use Generate to fill it with fresh wallets.">
         {wallets.length ? (
-          <div className="max-h-64 space-y-1 overflow-y-auto rounded-xl border border-neutral-800 p-1.5 scrollbar-thin">
+          <div className="max-h-64 space-y-1 overflow-y-auto rounded-xl border border-white/[0.07] p-1.5 scrollbar-thin">
             {wallets.map((w) => (
-              <label key={w.id} className="flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 text-sm hover:bg-neutral-800/60">
+              <label key={w.id} className="flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 text-sm hover:bg-white/[0.05]">
                 <input type="checkbox" checked={picked.includes(w.id)} onChange={() => toggle(w.id)} className="accent-violet-500" />
                 <span className="flex-1">{w.name}</span>
                 {w.isMaster && <Badge tone="amber">Master</Badge>}

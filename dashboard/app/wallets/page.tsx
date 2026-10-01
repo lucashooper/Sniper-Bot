@@ -74,15 +74,15 @@ export default function WalletsPage() {
       )}
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-        <div className="glass rounded-2xl border border-neutral-800 p-4">
+        <div className="glass rounded-2xl border border-white/[0.07] p-4">
           <div className="text-xs text-neutral-400">Wallets</div>
           <div className="mt-2 font-mono text-xl font-semibold">{wallets.length}</div>
         </div>
-        <div className="glass rounded-2xl border border-neutral-800 p-4">
+        <div className="glass rounded-2xl border border-white/[0.07] p-4">
           <div className="text-xs text-neutral-400">Total SOL</div>
           <div className="mt-2 font-mono text-xl font-semibold">{state?.status.rpcConfigured ? total.toFixed(4) : "no RPC"}</div>
         </div>
-        <div className="glass col-span-2 rounded-2xl border border-neutral-800 p-4 md:col-span-1">
+        <div className="glass col-span-2 rounded-2xl border border-white/[0.07] p-4 md:col-span-1">
           <div className="text-xs text-neutral-400">Master</div>
           <div className="mt-2 truncate font-mono text-sm font-semibold">{wallets.find((w) => w.isMaster)?.name ?? "none"}</div>
         </div>
@@ -94,7 +94,7 @@ export default function WalletsPage() {
         ) : (
           <div className="overflow-x-auto scrollbar-thin">
             <table className="w-full min-w-[760px]">
-              <thead className="border-b border-neutral-800">
+              <thead className="border-b border-white/[0.07]">
                 <tr>
                   <Th>Name</Th>
                   <Th>Public key</Th>
@@ -104,7 +104,7 @@ export default function WalletsPage() {
                   <Th className="text-right">Actions</Th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-neutral-800/70">
+              <tbody className="divide-y divide-white/[0.05]">
                 {wallets.map((w) => {
                   const b = balances[w.id];
                   const held = b?.tokens.filter((t) => t.amount > 0) ?? [];
@@ -231,7 +231,7 @@ function ImportModal({ open, onClose, onDone, run }: { open: boolean; onClose: (
           rows={3}
           spellCheck={false}
           autoComplete="off"
-          className="w-full rounded-xl border border-neutral-800 bg-ink-950 p-3 font-mono text-xs text-neutral-100 outline-none focus:border-violet-500/60"
+          className="w-full rounded-xl border border-white/[0.07] bg-ink-950 p-3 font-mono text-xs text-neutral-100 outline-none focus:border-violet-500/60"
         />
       </Field>
       {isPhrase && (

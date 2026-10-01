@@ -114,6 +114,7 @@ export function TokenChart({
   const volume = useRef<ISeriesApi<"Histogram"> | null>(null);
   const markers = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const fitKey = useRef("");
+  const drawn = useRef({ key: "", len: 0 });
   const intervalSecRef = useRef(intervalSec);
   intervalSecRef.current = intervalSec;
 
@@ -153,6 +154,7 @@ export function TokenChart({
     c.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     markers.current = createSeriesMarkers(candles.current, []);
     chart.current = c;
+    drawn.current = { key: "", len: 0 };
     return () => {
       c.remove();
       chart.current = null;
@@ -171,8 +173,21 @@ export function TokenChart({
     const v = volume.current;
     if (!s || !v || !chart.current) return;
     const data = buildCandles(trades, intervalSec, value, startPriceSol, startTs);
-    s.setData(data.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
-    v.setData(data.map((c) => ({ time: c.time, value: c.volume, color: c.buyVol >= c.volume / 2 ? "rgba(52,211,153,0.35)" : "rgba(251,113,133,0.35)" })));
+    const bar = ({ time, open, high, low, close }: Candle) => ({ time, open, high, low, close });
+    const vol = (c: Candle) => ({ time: c.time, value: c.volume, color: c.buyVol >= c.volume / 2 ? "rgba(52,211,153,0.35)" : "rgba(251,113,133,0.35)" });
+    // New trades only touch the last candle or add one: update those instead of redrawing the whole series.
+    const dataKey = `${creator}:${intervalSec}:${unit}:${value(1)}:${data[0]?.time ?? 0}`;
+    const prev = drawn.current;
+    if (prev.key === dataKey && prev.len > 0 && data.length >= prev.len) {
+      for (const c of data.slice(prev.len - 1)) {
+        s.update(bar(c));
+        v.update(vol(c));
+      }
+    } else {
+      s.setData(data.map(bar));
+      v.setData(data.map(vol));
+    }
+    drawn.current = { key: dataKey, len: data.length };
 
     const bucket = (ts: number) => (Math.floor(ts / 1000 / intervalSec) * intervalSec) as UTCTimestamp;
     const first = data[0]?.time ?? 0;

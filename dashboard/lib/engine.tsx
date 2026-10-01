@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { diagnose, type Check } from "./diagnose";
 import { accessToken, supabaseEnabled } from "./supabase";
-import type { EngineState, LogLine } from "./types";
+import type { EngineState, Launch, LogLine, TapeTrade } from "./types";
 
 /** Accepts "host", "host/" or a full URL; a bare host gets https:// (what Railway's domains need). */
 export function normalizeUrl(raw: string) {
@@ -72,6 +72,37 @@ export async function downloadTradesCsv() {
   URL.revokeObjectURL(a.href);
 }
 
+/** New trades of the coin open on the coin page, pushed by the engine as they happen. */
+export interface TapePush {
+  mint: string;
+  /** Only sent when the coin is no longer in the feed list (the feed carries it otherwise). */
+  launch?: Launch;
+  trades: TapeTrade[];
+  firstSeq: number;
+  lastSeq: number;
+}
+
+interface Watch {
+  mint: string;
+  after: () => number;
+  onTape: (p: TapePush) => void;
+}
+
+/** How many coins the feed list holds; matches the engine. */
+const FEED_SIZE = 60;
+
+/** Applies pushed coin updates to the feed list. Unchanged coins keep their object, so their rows skip re-rendering. */
+function mergeLaunches(cur: Launch[], upd: Launch[]): Launch[] {
+  const byMint = new Map(cur.map((l) => [l.mint, l]));
+  let added = false;
+  for (const u of upd) {
+    if (!byMint.has(u.mint)) added = true;
+    byMint.set(u.mint, u);
+  }
+  if (!added) return cur.map((l) => byMint.get(l.mint)!);
+  return [...byMint.values()].sort((a, b) => b.ts - a.ts).slice(0, FEED_SIZE);
+}
+
 interface Ctx {
   state: EngineState | null;
   logs: LogLine[];
@@ -84,6 +115,10 @@ interface Ctx {
   /** Bumps whenever the engine says the token feed moved (new launches, trades), so the coin page can re-fetch. */
   feedVersion: number;
   reconnect: () => void;
+  /** True when the engine pushes feed and coin updates over the live connection (newer engines). */
+  push: boolean;
+  /** Streams new trades of one coin; returns a function that stops it. */
+  watchTape: (mint: string, after: () => number, onTape: (p: TapePush) => void) => () => void;
   /** Hop-by-hop connection check, filled in while the engine is unreachable. */
   diagnosis: Check[] | null;
   runDiagnosis: () => Promise<void>;
@@ -110,6 +145,29 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
   const [feedVersion, setFeedVersion] = useState(0);
   const [epoch, setEpoch] = useState(0);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [push, setPush] = useState(false);
+  const pushRef = useRef(false);
+  const sock = useRef<WebSocket | null>(null);
+  const watch = useRef<Watch | null>(null);
+  const sendWatch = useCallback(() => {
+    const ws = sock.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !pushRef.current) return;
+    const w = watch.current;
+    ws.send(JSON.stringify(w ? { type: "watch", mint: w.mint, after: w.after() } : { type: "watch", mint: null }));
+  }, []);
+  const watchTape = useCallback(
+    (mint: string, after: () => number, onTape: (p: TapePush) => void) => {
+      const w: Watch = { mint, after, onTape };
+      watch.current = w;
+      sendWatch();
+      return () => {
+        if (watch.current !== w) return;
+        watch.current = null;
+        sendWatch();
+      };
+    },
+    [sendWatch],
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -132,6 +190,7 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
       let authFailed = false;
       try {
         ws = new WebSocket(`${url.replace(/^http/, "ws")}/ws`);
+        sock.current = ws;
       } catch {
         setError("bad-url");
         retry = setTimeout(() => void connect(), 5000);
@@ -153,17 +212,29 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
       ws.onmessage = (ev) => {
         const msg = JSON.parse(ev.data as string);
         if (msg.type === "hello") {
+          pushRef.current = !!msg.push;
+          setPush(!!msg.push);
           setConnected(true);
           setError(null);
           setDiagnosis(null);
           setLogs(msg.logs);
+          sendWatch();
           void refresh();
+        } else if (msg.type === "feed") {
+          setState((s) => (s ? { ...s, launches: mergeLaunches(s.launches, msg.launches), solUsd: msg.solUsd ?? s.solUsd } : s));
+        } else if (msg.type === "tape") {
+          const w = watch.current;
+          if (w && w.mint === msg.mint) w.onTape(msg as TapePush);
         } else if (msg.type === "log") setLogs((l) => (l.length > 800 ? [...l.slice(-600), msg.line] : [...l, msg.line]));
         else if (msg.type === "changed") {
           if (msg.topics.includes("trades")) setTradesVersion((v) => v + 1);
-          if (msg.topics.includes("launches")) setFeedVersion((v) => v + 1);
-          // The token feed ticks constantly; fetch just the launches for it instead of the whole state.
-          if (msg.topics.length === 1 && msg.topics[0] === "launches") {
+          // A pushing engine already sent the coins that changed; nothing to fetch for them.
+          if (pushRef.current) {
+            const rest = (msg.topics as string[]).filter((t) => t !== "launches");
+            if (!rest.length) return;
+          } else if (msg.topics.includes("launches")) setFeedVersion((v) => v + 1);
+          // Older engines: the token feed ticks constantly; fetch just the launches for it instead of the whole state.
+          if (!pushRef.current && msg.topics.length === 1 && msg.topics[0] === "launches") {
             api<Pick<EngineState, "launches" | "solUsd">>("/api/launches").then(
               (r) => setState((s) => (s ? { ...s, ...r } : s)),
               () => {},
@@ -183,11 +254,11 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
       if (retry) clearTimeout(retry);
       ws?.close();
     };
-  }, [refresh, epoch, runDiagnosis]);
+  }, [refresh, epoch, runDiagnosis, sendWatch]);
 
   return (
     <EngineCtx.Provider
-      value={{ state, logs, connected, error, refresh, tradesVersion, feedVersion, reconnect: () => setEpoch((e) => e + 1), diagnosis, runDiagnosis }}
+      value={{ state, logs, connected, error, refresh, tradesVersion, feedVersion, reconnect: () => setEpoch((e) => e + 1), diagnosis, runDiagnosis, push, watchTape }}
     >
       {children}
     </EngineCtx.Provider>
