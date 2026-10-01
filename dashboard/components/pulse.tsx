@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEngine } from "@/lib/engine";
 import { coinPage } from "@/lib/format";
+import { prefetchToken } from "@/lib/token-cache";
 import { STRETCH_PCT, pulseBucket, type PulseBucket } from "@/lib/pulse";
 import type { DevTag, Launch } from "@/lib/types";
 import { Age, Avatar, CopyCa, Socials, money, useQuickBuy } from "./token-feed";
@@ -29,6 +30,8 @@ export function Pulse({ launches, amounts, walletId, column, onColumn }: { launc
   const { buy, busy, toastNode } = useQuickBuy(walletId);
   const router = useRouter();
   const open = useCallback((mint: string) => router.push(coinPage(mint)), [router]);
+  // Load the coin page's code (and its chart library) ahead of the first click.
+  useEffect(() => router.prefetch("/token/"), [router]);
   const split = useMemo(() => {
     const out: Record<PulseBucket, Launch[]> = { new: [], stretch: [], graduated: [] };
     for (const l of launches) out[pulseBucket(l)].push(l);
@@ -185,6 +188,7 @@ const PulseCard = memo(function PulseCard({
         if ((e.target as HTMLElement).closest("button, a")) return;
         onOpen(l.mint);
       }}
+      onPointerDown={(e) => !(e.target as HTMLElement).closest("button, a") && prefetchToken(l.mint)}
       className={cx(
         "relative cursor-pointer overflow-hidden rounded-lg border bg-ink-900/60 p-2.5 transition-colors hover:border-white/[0.12] hover:bg-white/[0.02]",
         followed ? "border-amber-300/25" : "border-white/[0.06]",
