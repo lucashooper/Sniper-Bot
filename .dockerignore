@@ -1,0 +1,9 @@
+**/node_modules
+.git
+.env
+.env.*
+engine/data
+engine/dist
+dashboard/.next
+dashboard/out
+*.log

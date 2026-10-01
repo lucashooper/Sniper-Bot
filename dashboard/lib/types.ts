@@ -9,6 +9,8 @@ export interface Status {
   marketSource: "stream" | "synthetic";
   keystoreUnlocked: boolean;
   jitoBlockEngine: string;
+  auth: "supabase" | "token" | "none";
+  cloud: { enabled: boolean; ownerResolved: boolean; lastBackupAt: number; lastError: string };
 }
 
 export interface ExitRule {

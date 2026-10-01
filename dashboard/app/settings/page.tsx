@@ -2,20 +2,24 @@
 
 import { AlertTriangle, CheckCircle2, CircleDashed } from "lucide-react";
 import { useEffect, useState } from "react";
-import { saveConn, useEngine } from "@/lib/engine";
+import { DEFAULT_URL, saveConn, useEngine } from "@/lib/engine";
+import { supabaseEnabled } from "@/lib/supabase";
+import { useAuth } from "@/components/auth-gate";
+import { ModeSwitch } from "@/components/mode-switch";
 import { useSettingsDraft } from "@/components/use-settings";
 import { Button, Card, Field, Input, Toggle, cx, useToast } from "@/components/ui";
 
 export default function SettingsPage() {
   const { state, reconnect } = useEngine();
   const { draft, set, save, dirty } = useSettingsDraft();
+  const { email } = useAuth();
   const toast = useToast();
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
 
   useEffect(() => {
     try {
-      setUrl(localStorage.getItem("engine.url") || process.env.NEXT_PUBLIC_ENGINE_URL || "http://127.0.0.1:8787");
+      setUrl(localStorage.getItem("engine.url") || DEFAULT_URL);
       setToken(localStorage.getItem("engine.token") || "");
     } catch {
       setUrl("http://127.0.0.1:8787");
@@ -27,6 +31,7 @@ export default function SettingsPage() {
     { ok: !!s?.rpcConfigured, label: "Solana RPC", hint: "SOLANA_RPC_URL and SOLANA_WS_URL (Helius recommended)" },
     { ok: !!s?.keystoreUnlocked, label: "Keystore passphrase", hint: "KEYSTORE_PASSPHRASE, 12+ characters, never committed" },
     { ok: (state?.wallets.length ?? 0) > 0, label: "At least one wallet", hint: "Import or generate on the Wallets page" },
+    { ok: !!s?.cloud?.enabled, label: "Supabase backup", hint: s?.cloud?.lastError ? `Failing: ${s.cloud.lastError}` : "SUPABASE_URL, SUPABASE_SECRET_KEY and OWNER_EMAIL on the engine host" },
     { ok: !!s?.liveAllowed, label: "Live trading unlocked", hint: "ALLOW_LIVE_TRADING=true, only when you are ready" },
   ];
 
@@ -46,21 +51,15 @@ export default function SettingsPage() {
           <div className="space-y-4 p-5">
             <div className="flex items-center justify-between gap-4">
               <div>
-                <div className="font-medium">Simulation mode</div>
-                <div className="text-xs text-neutral-500">Paper-fills every trade and only dry-runs wallet transfers. Nothing is sent on chain.</div>
+                <div className="font-medium">Simulation or live</div>
+                <div className="text-xs text-neutral-500">Simulation paper-fills every trade and only dry-runs wallet transfers. Same switch as the header.</div>
               </div>
-              <Toggle
-                checked={draft?.simulation ?? true}
-                onChange={(v) => {
-                  if (!v && !confirm("Switch to LIVE trading? Snipes, exits and transfers will spend real SOL.")) return;
-                  save({ simulation: v }).then(() => toast.show(v ? "Simulation on" : "LIVE trading on"), (e) => toast.show(e.message, "err"));
-                }}
-              />
+              <ModeSwitch />
             </div>
             {!s?.liveAllowed && (
               <div className="flex gap-2 rounded-xl border border-neutral-800 bg-ink-950/60 p-3 text-xs text-neutral-400">
                 <AlertTriangle size={15} className="shrink-0 text-amber-300" />
-                Live mode is locked by the engine. Set <code className="font-mono">ALLOW_LIVE_TRADING=true</code> in <code className="font-mono">.env</code> and restart it to unlock the toggle.
+                Live mode is locked by the engine. Set <code className="font-mono">ALLOW_LIVE_TRADING=true</code> on the engine host (<code className="font-mono">.env</code> locally, the hostin <code className="font-mono">.env</code> and restart it to unlock the toggle.apos;s variables in production) and restart it to unlock the switch.
               </div>
             )}
           </div>
@@ -104,10 +103,17 @@ export default function SettingsPage() {
         <Card title="Engine connection">
           <div className="space-y-4 p-5">
             <Field label="Engine URL"><Input value={url} onChange={(e) => setUrl(e.target.value)} className="font-mono text-xs" /></Field>
-            <Field label="API token" hint="Only needed if you set ENGINE_API_TOKEN. Stored in this browser only.">
-              <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} className="font-mono text-xs" />
-            </Field>
+            {supabaseEnabled ? (
+              <div className="text-xs text-neutral-400">Signed in as <span className="text-neutral-200">{email}</span>. The engine checks this session on every request.</div>
+            ) : (
+              <Field label="API token" hint="Only needed if you set ENGINE_API_TOKEN. Stored in this browser only.">
+                <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} className="font-mono text-xs" />
+              </Field>
+            )}
             <Button onClick={() => (saveConn(url.replace(/\/$/, ""), token), reconnect(), toast.show("Reconnecting"))}>Save &amp; reconnect</Button>
+            {s?.cloud?.enabled && (
+              <div className="text-xs text-neutral-500">Last Supabase backup: <span className="text-neutral-300">{s.cloud.lastBackupAt ? new Date(s.cloud.lastBackupAt).toLocaleString() : "pending"}</span></div>
+            )}
             <div className="text-xs text-neutral-500">Jito block engine: <span className="font-mono text-neutral-300">{s?.jitoBlockEngine}</span></div>
           </div>
         </Card>

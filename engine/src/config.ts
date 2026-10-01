@@ -22,12 +22,22 @@ export const env = {
   jitoAuthUuid: process.env.JITO_AUTH_UUID ?? "",
   keystorePassphrase: process.env.KEYSTORE_PASSPHRASE ?? "",
   apiHost: process.env.ENGINE_HOST ?? "127.0.0.1",
-  apiPort: num(process.env.ENGINE_PORT, 8787),
+  /** PORT is what Railway, Fly and Render inject; ENGINE_PORT wins when both are set. */
+  apiPort: num(process.env.ENGINE_PORT || process.env.PORT, 8787),
   apiToken: process.env.ENGINE_API_TOKEN ?? "",
   dashboardOrigins: (process.env.DASHBOARD_ORIGINS ?? "http://localhost:3000,http://127.0.0.1:3000").split(",").map((s) => s.trim()),
   dataDir: path.resolve(process.env.ENGINE_DATA_DIR ?? path.join(process.cwd(), "data")),
+  /** Supabase: sign-in for the dashboard and an off-host backup of the engine's state. Optional for local use. */
+  supabaseUrl: (process.env.SUPABASE_URL ?? "").replace(/\/$/, ""),
+  /** Secret (sb_secret_...) or legacy service_role key. Engine host only; never put it on Netlify. */
+  supabaseSecretKey: process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
+  /** The only account allowed to drive the engine. */
+  ownerEmail: (process.env.OWNER_EMAIL ?? "").trim().toLowerCase(),
   /** Hard switch: live trading is impossible unless this is set, whatever the dashboard toggle says. */
   allowLive: bool(process.env.ALLOW_LIVE_TRADING, false),
 };
 
 export const hasRpc = () => env.rpcUrl.length > 0;
+export const hasSupabase = () => !!(env.supabaseUrl && env.supabaseSecretKey && env.ownerEmail);
+/** Anything but loopback is reachable from outside the machine (a cloud host binds 0.0.0.0). */
+export const isPublicBind = () => !["127.0.0.1", "localhost", "::1"].includes(env.apiHost);

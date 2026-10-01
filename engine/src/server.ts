@@ -1,7 +1,8 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import { WebSocketServer, type WebSocket } from "ws";
-import { env, hasRpc } from "./config.js";
+import { env, hasRpc, hasSupabase, isPublicBind } from "./config.js";
+import { cloudStatus, verifyOwnerToken } from "./cloud.js";
 import { bus, log, type LogLine } from "./bus.js";
 import { recentLaunches } from "./engine.js";
 import { isUnlocked } from "./keystore.js";
@@ -17,7 +18,7 @@ import {
 import { checkMint } from "./safety.js";
 import { getSettings, updateSettings, type Settings } from "./settings.js";
 import { executeBuy, executeSell, isLive } from "./trader.js";
-import { fundWallet, getBalances, reclaimAll, refreshBalances } from "./walletOps.js";
+import { fundWallet, getBalances, reclaimAll, refreshBalances, withdraw } from "./walletOps.js";
 import { generateWallet, importWallet, listWallets, removeWallet, updateWallet } from "./wallets.js";
 
 type Handler = (body: any, params: Record<string, string>, url: URL) => Promise<unknown> | unknown;
@@ -37,6 +38,8 @@ export function status() {
     marketSource: hasRpc() ? "stream" : "synthetic",
     keystoreUnlocked: isUnlocked(),
     jitoBlockEngine: env.jitoBlockEngineUrl,
+    auth: hasSupabase() ? "supabase" : env.apiToken ? "token" : "none",
+    cloud: { ...cloudStatus },
   };
 }
 
@@ -68,6 +71,7 @@ route("DELETE", "/api/wallets/:id", (_b, p) => removeWallet(p.id));
 route("POST", "/api/wallets/refresh", async () => (await refreshBalances(), getBalances()));
 route("POST", "/api/wallets/:id/fund", (b, p) => fundWallet(p.id, Number(b.sol)));
 route("POST", "/api/wallets/reclaim", () => reclaimAll());
+route("POST", "/api/wallets/:id/withdraw", (b, p) => withdraw(p.id, String(b.to ?? ""), b.sol === "max" ? "max" : Number(b.sol)));
 
 route("POST", "/api/safety", (b) => checkMint(String(b.mint)));
 route("POST", "/api/snipe", (b) =>
@@ -92,13 +96,20 @@ class HttpError extends Error {
   }
 }
 
-function authorized(req: http.IncomingMessage, url: URL) {
-  if (!env.apiToken) return true;
-  const header = req.headers.authorization?.replace(/^Bearer /, "") ?? url.searchParams.get("token") ?? "";
-  const a = Buffer.from(header);
-  const b = Buffer.from(env.apiToken);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+/**
+ * Who may drive the engine: the owner's Supabase session (dashboard), or ENGINE_API_TOKEN (scripts, curl).
+ * With neither configured the engine only trusts its own machine, and index.ts refuses a public bind in that case.
+ */
+async function authorized(token: string) {
+  if (env.apiToken) {
+    const a = Buffer.from(token);
+    const b = Buffer.from(env.apiToken);
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
+  }
+  if (hasSupabase()) return verifyOwnerToken(token);
+  return !env.apiToken && !isPublicBind();
 }
+const bearer = (req: http.IncomingMessage) => req.headers.authorization?.replace(/^Bearer /, "") ?? "";
 
 // Browsers send Origin on cross-site requests; only the dashboard may drive the engine (blocks drive-by CSRF from
 // any other site open in the same browser). Non-browser clients (curl) send no Origin and are allowed.
@@ -120,10 +131,12 @@ export function startServer() {
     if (!originAllowed(req)) return res.writeHead(403).end('{"error":"origin not allowed"}');
     if (req.method === "OPTIONS") return res.writeHead(204).end();
     const url = new URL(req.url ?? "/", "http://localhost");
+    // Unauthenticated liveness probe for the hosting platform. Says nothing about the bot.
+    if (req.method === "GET" && url.pathname === "/health") return res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
     if (req.method !== "GET" && !String(req.headers["content-type"] ?? "").startsWith("application/json")) {
       return res.writeHead(415).end('{"error":"content-type must be application/json"}');
     }
-    if (!authorized(req, url)) return res.writeHead(401, { "content-type": "application/json" }).end('{"error":"unauthorized"}');
+    if (!(await authorized(bearer(req)).catch(() => false))) return res.writeHead(401, { "content-type": "application/json" }).end('{"error":"unauthorized"}');
 
     if (req.method === "GET" && url.pathname === "/api/export/trades.csv") {
       res.writeHead(200, {
@@ -161,14 +174,31 @@ export function startServer() {
   const wss = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    if (url.pathname !== "/ws" || !originAllowed(req) || !authorized(req, url)) return socket.destroy();
+    if (url.pathname !== "/ws" || !originAllowed(req)) return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws));
   });
+  // Browsers cannot set headers on a WebSocket, and a token in the URL ends up in proxy logs, so the first message
+  // must be {"type":"auth","token":"..."}. Nothing is sent to a socket until it has authenticated.
   const clients = new Set<WebSocket>();
   wss.on("connection", (ws) => {
-    clients.add(ws);
-    ws.send(JSON.stringify({ type: "hello", logs: bus.history.slice(-200), status: status() }));
-    ws.on("close", () => clients.delete(ws));
+    const deadline = setTimeout(() => ws.close(4401, "auth timeout"), 5_000);
+    ws.once("message", async (raw) => {
+      clearTimeout(deadline);
+      let token = "";
+      try {
+        const m = JSON.parse(String(raw));
+        if (m?.type === "auth") token = String(m.token ?? "");
+      } catch {
+        /* not JSON: falls through as unauthenticated */
+      }
+      if (!(await authorized(token).catch(() => false))) return ws.close(4401, "unauthorized");
+      clients.add(ws);
+      ws.send(JSON.stringify({ type: "hello", logs: bus.history.slice(-200), status: status() }));
+    });
+    ws.on("close", () => {
+      clearTimeout(deadline);
+      clients.delete(ws);
+    });
   });
   const broadcast = (msg: unknown) => {
     const s = JSON.stringify(msg);
@@ -188,6 +218,6 @@ export function startServer() {
   });
 
   server.listen(env.apiPort, env.apiHost, () => {
-    log.info("engine", `API listening on http://${env.apiHost}:${env.apiPort}${env.apiToken ? " (token required)" : ""}`);
+    log.info("engine", `API listening on http://${env.apiHost}:${env.apiPort} (sign-in: ${status().auth})`);
   });
 }

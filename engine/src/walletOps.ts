@@ -132,3 +132,33 @@ export async function reclaimAll() {
   void refreshBalances();
   return results;
 }
+
+/** Any wallet -> an outside address (Phantom, Axiom, an exchange). "max" sends everything but the fee. */
+export async function withdraw(walletId: string, to: string, solAmount: number | "max") {
+  const w = listWallets().find((x) => x.id === walletId);
+  if (!w) throw new Error("Unknown wallet");
+  let dest: PublicKey;
+  try {
+    dest = new PublicKey(to.trim());
+  } catch {
+    throw new Error("That is not a valid Solana address");
+  }
+  if (dest.toBase58() === w.publicKey) throw new Error("Destination is the same wallet");
+  const kp = keypairOf(w.id);
+  let lam: number;
+  if (solAmount === "max") {
+    // Drain to zero (a system account cannot sit below rent exemption): balance minus one signature's fee.
+    lam = (await connection().getBalance(kp.publicKey)) - 5_000;
+    if (lam <= 0) throw new Error(`${w.name} has nothing to withdraw`);
+  } else {
+    if (!(solAmount > 0)) throw new Error("Amount must be positive");
+    lam = lamports(solAmount);
+  }
+  const sig = await send(
+    kp,
+    [SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: dest, lamports: lam })],
+    `Withdraw ${(lam / LAMPORTS).toFixed(4)} SOL from ${w.name} to ${short(dest.toBase58())}`,
+  );
+  void refreshBalances();
+  return { signature: sig, sol: lam / LAMPORTS };
+}

@@ -3,8 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
-import { Activity, BarChart3, Crosshair, KeyRound, LayoutDashboard, Radio, Wallet } from "lucide-react";
-import { useEngine } from "@/lib/engine";
+import { useState } from "react";
+import { ArrowDownToLine, BarChart3, Crosshair, KeyRound, LayoutDashboard, LogOut, Radio, Wallet } from "lucide-react";
+import { DEFAULT_URL, readConn, useEngine } from "@/lib/engine";
+import { useAuth } from "./auth-gate";
+import { DepositDrawer } from "./deposit";
+import { ModeSwitch } from "./mode-switch";
 import { cx } from "./ui";
 
 export const NAV = [
@@ -31,6 +35,8 @@ function ModeDot() {
 export function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const { state, connected, error } = useEngine();
+  const { email, signOut } = useAuth();
+  const [depositOpen, setDepositOpen] = useState(false);
   const active = (href: string) => (href === "/" ? path === "/" : path.startsWith(href));
   const value = state ? state.metrics.portfolioValueSol : 0;
 
@@ -89,27 +95,72 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col pl-20 lg:pl-80">
-        <header className="sticky top-0 z-10 flex h-16 items-center justify-between gap-3 border-b border-neutral-800/80 bg-ink-950/80 px-4 backdrop-blur md:px-8">
-          <div className="text-sm text-neutral-400">{NAV.find((n) => active(n.href))?.label}</div>
-          <div className="flex items-center gap-2">
-            <span className="hidden sm:inline-flex"><ModeDot /></span>
-            <span className="rounded-full border border-neutral-800 bg-ink-800 px-3.5 py-1.5 font-mono text-sm font-semibold tabular-nums">
-              {value.toFixed(3)} SOL
-            </span>
-            <span
-              title={connected ? "Engine connected" : "Engine offline"}
-              className={cx("grid h-9 w-9 place-items-center rounded-full border border-neutral-800 bg-ink-800", connected ? "text-emerald-400" : "text-neutral-600")}
-            >
-              <Activity size={16} />
-            </span>
-          </div>
-        </header>
-        {!connected && (
-          <div className="mx-4 mt-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200 md:mx-8">
-            {error ?? "Connecting to the engine…"} Start it with <code className="font-mono">npm run dev:engine</code>, or set its address under Settings.
+        {state?.status.live && connected && (
+          <div className="sticky top-0 z-20 flex items-center justify-center gap-2 bg-rose-600 px-4 py-1 text-center text-xs font-semibold tracking-wide text-white">
+            LIVE EXECUTION: trades spend real SOL
           </div>
         )}
+        <header className={cx("sticky z-10 flex h-16 items-center justify-between gap-3 border-b bg-ink-950/80 px-4 backdrop-blur md:px-8", state?.status.live && connected ? "top-6 border-rose-500/40" : "top-0 border-neutral-800/80")}>
+          <div className="hidden text-sm text-neutral-400 sm:block">{NAV.find((n) => active(n.href))?.label}</div>
+          <div className="ml-auto flex items-center gap-2">
+            <ModeSwitch />
+            <button
+              onClick={() => setDepositOpen(true)}
+              disabled={!connected}
+              className="inline-flex h-9 items-center gap-1.5 rounded-full bg-emerald-500 px-3.5 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-400 disabled:opacity-40"
+            >
+              <ArrowDownToLine size={14} /> Deposit
+            </button>
+            <span className="hidden rounded-full border border-neutral-800 bg-ink-800 px-3.5 py-1.5 font-mono text-sm font-semibold tabular-nums md:inline">
+              {value.toFixed(3)} SOL
+            </span>
+            {email && (
+              <button onClick={signOut} title={`Sign out ${email}`} aria-label="Sign out" className="grid h-9 w-9 place-items-center rounded-full border border-neutral-800 bg-ink-800 text-neutral-400 hover:text-neutral-100">
+                <LogOut size={15} />
+              </button>
+            )}
+          </div>
+        </header>
+        {!connected && <OfflineNotice error={error} />}
+        <DepositDrawer open={depositOpen} onClose={() => setDepositOpen(false)} />
         <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 md:px-8">{children}</main>
+      </div>
+    </div>
+  );
+}
+
+/** Explains why the engine is unreachable in terms of what to change, not just that it failed. */
+function OfflineNotice({ error }: { error: string | null }) {
+  const url = readConn().url;
+  const local = /\/\/(127\.0\.0\.1|localhost)/.test(url);
+  const onHttps = typeof window !== "undefined" && window.location.protocol === "https:";
+  let msg: React.ReactNode;
+  if (error === "unauthorized") {
+    msg = <>The engine rejected this sign-in. Check that <code className="font-mono">OWNER_EMAIL</code> on the engine host matches the account you signed in with.</>;
+  } else if (local && onHttps) {
+    msg = (
+      <>
+        This site is pointed at <code className="font-mono">{url}</code>, which is your own computer, not the server. Set{" "}
+        <code className="font-mono">NEXT_PUBLIC_ENGINE_URL</code> on Netlify to your engine&apos;s https address and redeploy
+        {url !== DEFAULT_URL && <>, or fix the address saved under Settings</>}.
+      </>
+    );
+  } else if (onHttps && url.startsWith("http://")) {
+    msg = <>An https site cannot call an http engine. Use the engine&apos;s https address (Railway gives you one).</>;
+  } else if (error === "unreachable" || error === "bad-url") {
+    msg = local ? (
+      <>Start the engine with <code className="font-mono">npm run dev:engine</code>, or set its address under Settings.</>
+    ) : (
+      <>Cannot reach <code className="font-mono">{url}</code>. Check the engine is running on its host and that this site&apos;s address is in its <code className="font-mono">DASHBOARD_ORIGINS</code>.</>
+    );
+  } else {
+    msg = <>Connecting to <code className="font-mono">{url}</code>…</>;
+  }
+  return (
+    <div className="mx-4 mt-4 flex gap-3 rounded-xl border border-neutral-800 bg-ink-900 px-4 py-3 text-sm text-neutral-300 md:mx-8">
+      <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-neutral-500" />
+      <div>
+        <span className="font-medium text-neutral-100">Engine offline. Nothing is trading.</span> {msg}
       </div>
     </div>
   );

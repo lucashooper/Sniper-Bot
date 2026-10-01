@@ -1,37 +1,32 @@
-import { env, hasRpc } from "./config.js";
-import { log } from "./bus.js";
-import { startEngine } from "./engine.js";
-import { initKeystore } from "./keystore.js";
-import { refreshTipAccounts } from "./jito.js";
-import { startServer } from "./server.js";
-import { getSettings, updateSettings } from "./settings.js";
-import { startSimMarket } from "./sim.js";
-import { startStream } from "./stream.js";
-import { refreshBalances } from "./walletOps.js";
+import { env, hasSupabase, isPublicBind } from "./config.js";
+import { flushBackups, initCloud } from "./cloud.js";
 
-async function main() {
-  const ks = initKeystore();
-  if (ks === "locked") log.warn("engine", "KEYSTORE_PASSPHRASE not set: wallets cannot be added or used. Paper trading still works.");
-  else log.success("engine", "Keystore unlocked (AES-256-GCM, scrypt key)");
-
-  if (!env.allowLive && !getSettings().simulation) updateSettings({ simulation: true });
-  if (!env.allowLive) log.info("engine", "ALLOW_LIVE_TRADING is off: engine is locked to simulation mode");
-
-  startEngine();
-  startServer();
-
-  if (hasRpc()) {
-    startStream();
-    void refreshTipAccounts();
-    void refreshBalances();
-    setInterval(() => void refreshBalances(), 20_000);
-  } else {
-    log.warn("engine", "SOLANA_RPC_URL not set: running the synthetic market so you can try the bot end to end");
-    startSimMarket();
+// Boot order matters: the Supabase restore has to land in engine/data before the stores read their files, so the
+// rest of the engine is imported only afterwards.
+async function boot() {
+  if (isPublicBind() && !hasSupabase() && !env.apiToken) {
+    throw new Error(
+      `ENGINE_HOST=${env.apiHost} exposes the engine to the network, but no sign-in is configured. ` +
+        "Set SUPABASE_URL, SUPABASE_SECRET_KEY and OWNER_EMAIL (or at least ENGINE_API_TOKEN), or bind to 127.0.0.1.",
+    );
   }
+  if (env.supabaseUrl && !hasSupabase()) {
+    throw new Error("SUPABASE_URL is set but SUPABASE_SECRET_KEY or OWNER_EMAIL is missing");
+  }
+  if (hasSupabase()) await initCloud();
+  const { start } = await import("./app.js");
+  await start();
+
+  const stop = async (sig: string) => {
+    console.log(`${sig}: saving state to Supabase before exit`);
+    await flushBackups().catch(() => {});
+    process.exit(0);
+  };
+  process.once("SIGTERM", () => void stop("SIGTERM"));
+  process.once("SIGINT", () => void stop("SIGINT"));
 }
 
-main().catch((e) => {
-  log.error("engine", (e as Error).message);
+boot().catch((e) => {
+  console.error(`Engine failed to start: ${(e as Error).message}`);
   process.exit(1);
 });
