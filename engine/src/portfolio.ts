@@ -27,6 +27,8 @@ export interface Trade {
   realizedPnlSol: number;
   signature?: string;
   bundleId?: string;
+  /** Live trades: the slot the transaction landed in. */
+  slot?: number;
 }
 
 export interface Position {

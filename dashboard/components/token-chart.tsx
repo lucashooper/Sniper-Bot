@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { m as motion } from "framer-motion";
+import { ExternalLink } from "lucide-react";
 import {
   CandlestickSeries,
   ColorType,
@@ -11,11 +13,14 @@ import {
   type IChartApi,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
+  type Logical,
   type SeriesMarker,
   type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
 import type { TapeTrade, Trade } from "@/lib/types";
+import { compact, short, solscan } from "@/lib/format";
+import { cx } from "@/components/ui";
 
 export const INTERVALS = [
   { label: "1s", sec: 1 },
@@ -87,7 +92,8 @@ export function fmtAxis(n: number, usd: boolean) {
 
 /**
  * Live candle chart for one coin, drawn from the engine's own trade stream so it works on the bonding curve from the
- * first trade and in simulation. Dev trades and your own fills are marked on the candles.
+ * first trade and in simulation. Dev trades are marked on the candles; your own fills
+ * are badges pinned to their exact fill price and time.
  */
 export function TokenChart({
   trades,
@@ -164,6 +170,51 @@ export function TokenChart({
     };
   }, []);
 
+  // Where each of your fills sits on the chart, in pixels. Recomputed whenever the view or the data moves.
+  const times = useRef<number[]>([]);
+  const [spots, setSpots] = useState<Spot[]>([]);
+  const fillsRef = useRef(fills);
+  fillsRef.current = fills;
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const lastSpots = useRef("");
+  const place = useCallback(() => {
+    const c = chart.current;
+    const s = candles.current;
+    const t = times.current;
+    if (!c || !s || !box.current) return;
+    const ts = c.timeScale();
+    const iv = intervalSecRef.current;
+    const width = box.current.clientWidth - c.priceScale("right").width();
+    const height = box.current.clientHeight - ts.height();
+    const bar = ts.options().barSpacing;
+    const out: Spot[] = [];
+    for (const f of fillsRef.current) {
+      const sec = f.ts / 1000;
+      // The candle the fill belongs to (or the last one before it), then the exact moment inside that candle.
+      let lo = 0;
+      let hi = t.length - 1;
+      if (hi < 0 || sec < t[0]) continue;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (t[mid] <= sec) lo = mid;
+        else hi = mid - 1;
+      }
+      const base = ts.logicalToCoordinate(lo as Logical);
+      const y = s.priceToCoordinate(valueRef.current(f.priceSol));
+      if (base === null || y === null) continue;
+      const frac = Math.min(1, (sec - t[lo]) / iv) - 0.5;
+      const x = base + frac * bar;
+      if (x < 0 || x > width || y < 0 || y > height) continue;
+      // Tooltips open away from the nearer edge so they are never cut off.
+      out.push({ f, x, y, up: y > height * 0.5 });
+    }
+    const sig = out.map((o) => `${o.f.id}:${o.x.toFixed(1)}:${o.y.toFixed(1)}`).join("|");
+    if (sig === lastSpots.current) return;
+    lastSpots.current = sig;
+    setSpots(out);
+  }, []);
+
   useEffect(() => {
     candles.current?.applyOptions({ priceFormat: { type: "custom", minMove: 1e-12, formatter: (n: number) => fmtAxis(n, usd) } });
   }, [usd]);
@@ -190,19 +241,15 @@ export function TokenChart({
     drawn.current = { key: dataKey, len: data.length };
 
     const bucket = (ts: number) => (Math.floor(ts / 1000 / intervalSec) * intervalSec) as UTCTimestamp;
-    const first = data[0]?.time ?? 0;
     const m: SeriesMarker<Time>[] = [];
     for (const t of trades) {
       if (t.byCreator && t.trader === creator) {
         m.push({ time: bucket(t.ts), position: t.isBuy ? "belowBar" : "aboveBar", color: "#facc15", shape: "circle", text: t.isBuy ? "DB" : "DS", size: 0.6 });
       }
     }
-    for (const f of fills) {
-      const time = bucket(f.ts);
-      if (time < first) continue;
-      m.push({ time, position: f.side === "buy" ? "belowBar" : "aboveBar", color: f.side === "buy" ? UP : DOWN, shape: f.side === "buy" ? "arrowUp" : "arrowDown", text: f.side === "buy" ? "B" : "S" });
-    }
     markers.current?.setMarkers(m.sort((a, b) => (a.time as number) - (b.time as number)));
+    // Your own fills are drawn as HTML badges over the chart (below), at their exact price and time.
+    times.current = data.map((c) => c.time as number);
 
     // Re-fit when the coin, interval or unit changes; otherwise keep the user's zoom and follow the newest candle.
     // Also re-fit once the first trades arrive (the page can open on the feed's copy before the tape loads).
@@ -212,7 +259,106 @@ export function TokenChart({
       // A fixed window of ~90 candles keeps candle width steady instead of stretching a young coin's 3 candles across the chart.
       chart.current.timeScale().setVisibleLogicalRange({ from: data.length - 90, to: data.length + 3 });
     }
-  }, [trades, intervalSec, value, unit, creator, startPriceSol, startTs, fills]);
+    // The price scale re-fits on the next paint; place the fill badges after it.
+    requestAnimationFrame(() => requestAnimationFrame(place));
+  }, [trades, intervalSec, value, unit, creator, startPriceSol, startTs, place]);
 
-  return <div ref={box} className="h-full w-full" />;
+  useEffect(() => place(), [fills, place]);
+
+  // Badges follow the chart as it scrolls, zooms, resizes or re-scales.
+  useEffect(() => {
+    const c = chart.current;
+    if (!c) return;
+    const ts = c.timeScale();
+    ts.subscribeVisibleLogicalRangeChange(place);
+    ts.subscribeSizeChange(place);
+    c.subscribeCrosshairMove(place);
+    place();
+    return () => {
+      ts.unsubscribeVisibleLogicalRangeChange(place);
+      ts.unsubscribeSizeChange(place);
+      c.unsubscribeCrosshairMove(place);
+    };
+  }, [place]);
+
+  return (
+    <div className="relative h-full w-full">
+      <div ref={box} className="h-full w-full" />
+      <div className="pointer-events-none absolute inset-0 z-[5] overflow-hidden">
+        {spots.map((sp) => (
+          <FillBadge key={sp.f.id} spot={sp} usd={usd} solUsd={solUsd} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+interface Spot {
+  f: Trade;
+  x: number;
+  y: number;
+  up: boolean;
+}
+
+/**
+ * One of your buys (green B) or sells (red S), pinned to the price and time it filled at. A dot marks the exact point;
+ * the badge sits just below a buy and above a sell. Hover for the details; click to open the transaction.
+ */
+function FillBadge({ spot, usd, solUsd }: { spot: Spot; usd: boolean; solUsd: number | null }) {
+  const { f, x, y, up } = spot;
+  const buy = f.side === "buy";
+  // A fill from the last 20 s pulses once it appears, so a trade that just landed is easy to spot.
+  const [fresh] = useState(() => Date.now() - f.ts < 20_000);
+  const mc = f.priceSol * SUPPLY;
+  const mcText = usd && solUsd ? fmtAxis(mc * solUsd, true) : `${fmtAxis(mc, false)} SOL`;
+  const rows: [string, string][] = [
+    ["Amount", `${f.solAmount.toFixed(4)} SOL · ${compact(f.tokenAmount)} ${f.symbol}`],
+    ["MC", mcText],
+    ["Price", `${f.priceSol.toPrecision(4)} SOL`],
+    ["Slot", f.slot ? f.slot.toLocaleString() : f.mode === "sim" ? "paper trade" : "not reported"],
+    ["Wallet", f.walletName],
+    ["Time", new Date(f.ts).toLocaleTimeString([], { hour12: false })],
+  ];
+  if (!buy) rows.splice(2, 0, ["PnL", `${f.realizedPnlSol >= 0 ? "+" : ""}${f.realizedPnlSol.toFixed(4)} SOL`]);
+  const open = () => f.signature && window.open(solscan(f.signature), "_blank", "noopener,noreferrer");
+  return (
+    <div className="group absolute hover:z-20" style={{ left: x, top: y }}>
+      <span className={cx("absolute -left-[3px] -top-[3px] h-1.5 w-1.5 rounded-full ring-2 ring-ink-950", buy ? "bg-emerald-400" : "bg-rose-400")} />
+      <motion.button
+        initial={{ scale: 0, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ type: "spring", stiffness: 500, damping: 22 }}
+        onClick={open}
+        className={cx(
+          "pointer-events-auto absolute -left-[9px] grid h-[18px] w-[18px] place-items-center rounded-full text-[10px] font-bold text-white shadow-lg ring-1 ring-black/40",
+          buy ? "top-[7px] bg-emerald-500 shadow-emerald-900/40" : "-top-[25px] bg-rose-500 shadow-rose-900/40",
+        )}
+      >
+        {fresh && <span className={cx("absolute inset-0 animate-ping rounded-full opacity-60 [animation-iteration-count:3]", buy ? "bg-emerald-400" : "bg-rose-400")} />}
+        <span className="relative">{buy ? "B" : "S"}</span>
+      </motion.button>
+      <div
+        className={cx(
+          "pointer-events-none absolute left-1/2 z-10 hidden w-max min-w-[190px] -translate-x-1/2 rounded-lg border border-white/[0.08] bg-ink-900 px-3 py-2 text-[11px] shadow-2xl group-hover:block",
+          up ? "bottom-[32px]" : "top-[32px]",
+        )}
+      >
+        <div className={cx("mb-1 font-semibold", buy ? "text-emerald-300" : "text-rose-300")}>
+          {buy ? "Bought" : "Sold"} {f.symbol}
+          {f.mode === "sim" && <span className="ml-1 font-normal text-violet-300">paper</span>}
+        </div>
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex justify-between gap-4 tabular-nums">
+            <span className="text-neutral-500">{k}</span>
+            <span className="text-neutral-200">{v}</span>
+          </div>
+        ))}
+        {f.signature && (
+          <div className="mt-1 flex items-center gap-1 font-mono text-violet-300">
+            {short(f.signature, 6)} <ExternalLink size={10} /> <span className="font-sans text-neutral-500">click badge</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }

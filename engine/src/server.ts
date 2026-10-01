@@ -20,7 +20,7 @@ import {
 import { checkMint } from "./safety.js";
 import { DevTagError, getSettings, removeDevTag, setDevTag, updateSettings, type Settings } from "./settings.js";
 import { createGroup, generateIntoGroup, listGroups, removeGroup, updateGroup } from "./groups.js";
-import { executeBuy, executeSell, isLive, sellAll } from "./trader.js";
+import { executeBuy, executeSell, groupBuy, groupSell, isLive, sellAll } from "./trader.js";
 import { fundGroup, fundWallet, getBalances, reclaimAll, refreshBalances, withdraw } from "./walletOps.js";
 import { generateWallet, importWallet, listWallets, removeWallet, updateWallet } from "./wallets.js";
 
@@ -123,6 +123,21 @@ route("POST", "/api/positions/:key/sell", (b, p) =>
   }),
 );
 
+// Presets: one order across every wallet of a wallet group (see groupBuy / groupSell for how each send mode lands it).
+route("POST", "/api/presets/:id/buy", (b, p) => {
+  const mint = String(b.mint ?? "").trim();
+  const l = tokenDetail(mint)?.launch;
+  return groupBuy({ mint, groupId: p.id, sol: Number(b.sol), meta: l ? { name: l.name, symbol: l.symbol, creator: l.creator } : undefined }).catch((e) => {
+    log.error("trade", `Preset buy of ${Number(b.sol)} SOL per wallet failed: ${(e as Error).message}`, { mint });
+    throw e;
+  });
+});
+route("POST", "/api/presets/:id/sell", (b, p) =>
+  groupSell({ mint: String(b.mint ?? "").trim(), groupId: p.id, pct: Number(b.pct ?? 100) }).catch((e) => {
+    log.error("trade", `Preset sell of ${Number(b.pct ?? 100)}% failed: ${(e as Error).message}`);
+    throw e;
+  }),
+);
 route("POST", "/api/positions/sell-all", (b) =>
   sellAll({ mint: b.mint ? String(b.mint) : undefined, groupId: b.groupId ? String(b.groupId) : undefined }),
 );

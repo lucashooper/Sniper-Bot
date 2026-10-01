@@ -245,3 +245,138 @@ export function explainError(err: unknown, logs: string[]): string {
   if (custom) return `program error ${custom[1]} (0x${Number(custom[1]).toString(16)})${logs.length ? `; last log: ${logs[logs.length - 1]}` : ""}`;
   return raw;
 }
+
+export interface BundleLandResult {
+  bundleId: string | null;
+  /** Per transaction, in bundle order. */
+  signatures: string[];
+  slot?: number;
+  steps: Step[];
+}
+
+/**
+ * Lands one Jito bundle of up to 5 signed transactions (a preset buy or sell in Protected mode). A bundle is
+ * all-or-nothing: either every transaction in it runs, in order, in one block, or none does. The very same bundle is
+ * re-submitted every 2 s while it has not landed (same signatures, so nothing can run twice), never sent to the
+ * public network, and only called failed once the shared blockhash has expired.
+ */
+export async function landBundle(
+  txs: VersionedTransaction[],
+  ctx: { label: string; lastValidBlockHeight: number; mint: string; numbers: Record<string, unknown> },
+  deps: LandDeps = defaultDeps(),
+): Promise<BundleLandResult> {
+  const { conn, sleep, now } = deps;
+  if (!txs.length || txs.length > 5) throw new Error(`A Jito bundle holds 1 to 5 transactions, got ${txs.length}`);
+  const signatures = txs.map(signatureOf);
+  const t0 = now();
+  const steps: Step[] = [];
+  const step = (name: string, result: string) => steps.push({ ms: now() - t0, step: name, result });
+  let bundleId: string | null = null;
+  let lastJito: InflightStatus | "unknown" = "unknown";
+  let lastSendResult = "";
+  let sends = 0;
+  let lastSend = 0;
+  let blockHeight = 0;
+  let lastHeightCheck = 0;
+  let rpcError: string | null = null;
+  const fail = (stage: string, message: string, extra: Record<string, unknown> = {}) =>
+    new DetailedError(message, {
+      stage,
+      sendMode: "protected",
+      mint: ctx.mint,
+      signatures,
+      bundleId,
+      solscan: `https://solscan.io/tx/${signatures[0]}`,
+      jitoExplorer: bundleId ? `https://explorer.jito.wtf/bundle/${bundleId}` : undefined,
+      lastValidBlockHeight: ctx.lastValidBlockHeight,
+      ...ctx.numbers,
+      ...extra,
+      steps,
+    });
+
+  const send = async () => {
+    lastSend = now();
+    sends++;
+    const [r] = await Promise.allSettled([deps.jito.sendBundle(txs)]);
+    const result = r.status === "fulfilled" ? "accepted" : `refused: ${(r.reason as Error).message}`;
+    if (result !== lastSendResult) step("Jito sendBundle", sends > 1 ? `${result} (re-send ${sends - 1})` : result);
+    lastSendResult = result;
+    if (r.status === "fulfilled") {
+      bundleId = r.value;
+      if (sends === 1) log.info("jito", `${ctx.label}: bundle ${short(bundleId)} with ${txs.length} transaction(s) submitted`, { signature: signatures[0], mint: ctx.mint });
+    }
+  };
+
+  const check = async (history: boolean) => {
+    const sts = (await conn.getSignatureStatuses(signatures, history ? { searchTransactionHistory: true } : undefined)).value;
+    const done = sts.filter((st) => st && (history || st.confirmationStatus === "confirmed" || st.confirmationStatus === "finalized"));
+    if (!done.length) return null;
+    const bad = sts.findIndex((st) => st?.err);
+    if (bad >= 0) {
+      const st = sts[bad]!;
+      const logs = await failedLogs(conn, sleep, signatures[bad]);
+      step("On chain", `transaction ${bad + 1} ran and failed in slot ${st.slot}: ${JSON.stringify(st.err)}`);
+      throw fail("chain", `${ctx.label}: transaction ${bad + 1} of the bundle reached the chain but failed: ${explainError(st.err, logs)}`, {
+        onChainError: st.err,
+        slot: st.slot,
+        logs: logs.slice(-15),
+      });
+    }
+    // All-or-nothing: once one is in, all are (they share a block); wait for every status before settling.
+    if (done.length < signatures.length) return null;
+    const slot = sts[0]!.slot;
+    step("On chain", `bundle confirmed in slot ${slot}`);
+    return { bundleId, signatures, slot, steps };
+  };
+
+  await send();
+  while (true) {
+    try {
+      const r = await check(false);
+      rpcError = null;
+      if (r) return r;
+    } catch (e) {
+      if (e instanceof DetailedError) throw e;
+      rpcError = (e as Error).message;
+    }
+    if (bundleId) {
+      try {
+        const b = await deps.jito.bundleStatus(bundleId);
+        const st = b?.status ?? "Invalid";
+        if (st !== lastJito) step("Jito bundle status", st === "Invalid" ? "Invalid (Jito has no record of this bundle)" : st);
+        lastJito = st;
+      } catch (e) {
+        if (lastJito !== "unknown") step("Jito bundle status", `lookup failed: ${(e as Error).message}`);
+        lastJito = "unknown";
+      }
+    }
+    if (now() - lastSend > RESEND_MS) await send().catch(() => undefined);
+    if (now() - lastHeightCheck > 2_000) {
+      lastHeightCheck = now();
+      blockHeight = await conn.getBlockHeight("confirmed").catch(() => blockHeight);
+    }
+    if (blockHeight > ctx.lastValidBlockHeight) {
+      const r = await check(true).catch((e) => {
+        if (e instanceof DetailedError) throw e;
+        return null;
+      });
+      if (r) return r;
+      step("Blockhash", `expired at block ${ctx.lastValidBlockHeight} (now ${blockHeight}); the bundle can no longer land`);
+      const routes: Record<string, string> = lastSendResult.startsWith("refused") ? { "Jito sendBundle": lastSendResult } : {};
+      throw fail(
+        "not_landed",
+        `${ctx.label} did not land: ${whyNotLanded("protected", routes, lastJito, sends)} The bundle has expired, so nothing was spent and it cannot land later. Try again.`,
+        { jitoStatus: lastJito, sends, blockHeight },
+      );
+    }
+    if (now() - t0 > WALL_CLOCK_CAP_MS) {
+      step("Gave up", `no answer from the RPC for ${Math.round(WALL_CLOCK_CAP_MS / 1000)} s (${rpcError ?? "no error"})`);
+      throw fail(
+        "unknown",
+        `${ctx.label}: could not confirm whether the bundle landed, because the RPC stopped answering (${rpcError ?? "no answer"}). It MAY have gone through; check the transactions on Solscan before trading again.`,
+        { jitoStatus: lastJito, rpcError },
+      );
+    }
+    await sleep(POLL_MS);
+  }
+}

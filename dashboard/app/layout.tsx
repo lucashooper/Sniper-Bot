@@ -5,6 +5,7 @@ import { Shell } from "@/components/shell";
 import { AuthGate } from "@/components/auth-gate";
 import { Motion } from "@/components/motion";
 import { DevsProvider } from "@/components/devs";
+import { TradeToastProvider } from "@/components/trade-toasts";
 
 export const metadata: Metadata = {
   title: "Sniper Bot",
@@ -26,7 +27,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <AuthGate>
             <EngineProvider>
               <DevsProvider>
-                <Shell>{children}</Shell>
+                <TradeToastProvider>
+                  <Shell>{children}</Shell>
+                </TradeToastProvider>
               </DevsProvider>
             </EngineProvider>
           </AuthGate>

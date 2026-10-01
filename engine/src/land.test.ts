@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { DetailedError } from "./bus.js";
-import { explainError, landTransaction, type LandDeps } from "./land.js";
+import { explainError, landBundle, landTransaction, type LandDeps } from "./land.js";
 
 function signedTx() {
   const kp = Keypair.generate();
@@ -136,4 +136,65 @@ test("when the RPC stops answering the fate is reported as unknown, never as fai
 test("explainError turns a lamports shortfall into numbers", () => {
   const msg = explainError({ InstructionError: [3, { Custom: 1 }] }, ["Transfer: insufficient lamports 21000000, need 23000000"]);
   assert.match(msg, /had 0\.021000 SOL where 0\.023000 SOL was needed/);
+});
+
+function bundleFakes(opts: { landAfterSends?: number; err?: unknown }) {
+  let t = 0;
+  let height = 100;
+  const sent: string[][] = [];
+  const deps: LandDeps = {
+    now: () => t,
+    sleep: async (ms) => {
+      t += ms;
+    },
+    jito: {
+      sendBundle: async (txs) => {
+        sent.push(txs.map((x) => Buffer.from(x.serialize()).toString("base64")));
+        return "bundle-9";
+      },
+      bundleStatus: async () => ({ status: "Pending" as const }),
+    },
+    sender: async () => {
+      throw new Error("protected bundles must never use Helius Sender");
+    },
+    conn: {
+      getSignatureStatuses: (async (sigs: string[]) => {
+        const landed = opts.landAfterSends !== undefined && sent.length >= opts.landAfterSends;
+        return { context: { slot: 1 }, value: sigs.map(() => (landed ? { slot: 42, confirmations: 1, err: opts.err ?? null, confirmationStatus: "confirmed" } : null)) };
+      }) as unknown as LandDeps["conn"]["getSignatureStatuses"],
+      sendRawTransaction: (async () => {
+        throw new Error("protected bundles must never go to the public RPC");
+      }) as unknown as LandDeps["conn"]["sendRawTransaction"],
+      getBlockHeight: (async () => (height += 3)) as unknown as LandDeps["conn"]["getBlockHeight"],
+      getTransaction: (async () => ({ meta: { logMessages: [] } })) as unknown as LandDeps["conn"]["getTransaction"],
+    },
+  };
+  return { deps, sent };
+}
+
+const bctx = { label: "PRESET BUY", lastValidBlockHeight: 150, mint: "Mint111", numbers: {} };
+
+test("a preset bundle re-sends the very same transactions to Jito only and settles once every one is confirmed", async () => {
+  const txs = [signedTx(), signedTx(), signedTx()];
+  const { deps, sent } = bundleFakes({ landAfterSends: 3 });
+  const res = await landBundle(txs, bctx, deps);
+  assert.equal(res.slot, 42);
+  assert.equal(res.signatures.length, 3);
+  assert.ok(sent.length >= 3);
+  for (const s of sent) assert.deepEqual(s, txs.map((x) => Buffer.from(x.serialize()).toString("base64")));
+});
+
+test("a preset bundle that never lands fails only after the blockhash expires, saying nothing was spent", async () => {
+  const { deps } = bundleFakes({});
+  await assert.rejects(landBundle([signedTx(), signedTx()], bctx, deps), (e: unknown) => {
+    assert.ok(e instanceof DetailedError);
+    assert.equal(e.details.stage, "not_landed");
+    assert.match(e.message, /nothing was spent/);
+    return true;
+  });
+});
+
+test("a bundle holds at most 5 transactions", async () => {
+  const { deps } = bundleFakes({});
+  await assert.rejects(landBundle(Array.from({ length: 6 }, signedTx), bctx, deps), /1 to 5/);
 });
