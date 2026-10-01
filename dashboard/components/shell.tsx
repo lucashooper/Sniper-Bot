@@ -96,12 +96,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col pl-20 lg:pl-80">
-        {state?.status.live && connected && (
-          <div className="sticky top-0 z-20 flex items-center justify-center gap-2 bg-rose-600 px-4 py-1 text-center text-xs font-semibold tracking-wide text-white">
-            LIVE EXECUTION: trades spend real SOL
-          </div>
-        )}
-        <header className={cx("sticky z-10 flex h-16 items-center justify-between gap-3 border-b bg-ink-950/80 px-4 backdrop-blur md:px-8", state?.status.live && connected ? "top-6 border-rose-500/40" : "top-0 border-neutral-800/80")}>
+        <header className="sticky top-0 z-10 flex h-16 items-center justify-between gap-3 border-b border-neutral-800/80 bg-ink-950/80 px-4 backdrop-blur md:px-8">
           <div className="hidden text-sm text-neutral-400 sm:block">{NAV.find((n) => active(n.href))?.label}</div>
           <div className="ml-auto flex items-center gap-2">
             <ModeSwitch />

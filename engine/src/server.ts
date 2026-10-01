@@ -4,7 +4,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { env, hasRpc, hasSupabase, isPublicBind } from "./config.js";
 import { checkOwnerToken, cloudStatus, type AuthResult } from "./cloud.js";
 import { bus, log, type LogLine } from "./bus.js";
-import { recentLaunches, solUsd } from "./feed.js";
+import { recentLaunches, solUsd, tokenDetail } from "./feed.js";
 import { isUnlocked } from "./keystore.js";
 import {
   closedPositions,
@@ -55,6 +55,10 @@ route("GET", "/api/state", () => ({
   solUsd: solUsd(),
 }));
 route("GET", "/api/launches", () => ({ launches: recentLaunches().slice(0, 60), solUsd: solUsd() }));
+route("GET", "/api/token/:mint", (_b, p, url) => {
+  const d = tokenDetail(decodeURIComponent(p.mint), Number(url.searchParams.get("after") ?? 0) || 0);
+  return d ? { tracked: true, ...d, solUsd: solUsd() } : { tracked: false, solUsd: solUsd() };
+});
 route("GET", "/api/settings", () => getSettings());
 route("PUT", "/api/settings", (b: Partial<Settings>) => {
   if (b.simulation === false && !env.allowLive) {

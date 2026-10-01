@@ -12,3 +12,6 @@ export const ago = (ts: number) => {
 export const time = (ts: number) => new Date(ts).toLocaleTimeString([], { hour12: false });
 export const solscan = (sig: string) => `https://solscan.io/tx/${sig}`;
 export const tokenUrl = (mint: string) => `https://pump.fun/coin/${mint}`;
+/** The dashboard's own coin page (chart, trade panel, live stats). */
+export const coinPage = (mint: string) => `/token/?mint=${encodeURIComponent(mint)}`;
+export const accountUrl = (addr: string) => `https://solscan.io/account/${addr}`;

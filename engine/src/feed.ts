@@ -25,6 +25,8 @@ export interface Launch {
   simulated: boolean;
   priceSol: number;
   marketCapSol: number;
+  /** Market cap when the coin was created: where its chart starts. */
+  launchMarketCapSol: number;
   athMarketCapSol: number;
   /** Bonding-curve completion, 0–100. Pump.fun graduates the coin to PumpSwap at 100. */
   curvePct: number;
@@ -52,12 +54,57 @@ export const TOTAL_SUPPLY = 1_000_000_000;
 export const CURVE_TOKENS = 793_100_000;
 const MAX_LAUNCHES = 150;
 const SPARK_POINTS = 40;
+/** Trades kept per coin for its chart and trade list. */
+const MAX_TAPE = 3_000;
+/** A coin opened on its own page stays tracked this long after the page last asked for it, even once it scrolls out of the feed. */
+const VIEW_RETAIN_MS = 10 * 60_000;
+
+/** One trade as the coin page shows it: chart candles are built from these. */
+export interface TapeTrade {
+  /** Increases by one per trade of this coin, so the page can ask for only what it has not seen yet. */
+  seq: number;
+  ts: number;
+  priceSol: number;
+  isBuy: boolean;
+  solAmount: number;
+  tokenAmount: number;
+  trader: string;
+  byCreator: boolean;
+  signature?: string;
+}
 
 const launches: Launch[] = [];
 const byMint = new Map<string, Launch>();
 const traders = new Map<string, Set<string>>();
 const devTokens = new Map<string, number>();
 const curveStart = new Map<string, number>();
+const tapes = new Map<string, TapeTrade[]>();
+const seqs = new Map<string, number>();
+/** Net tokens bought per wallet, from the trades seen since launch. */
+const holdings = new Map<string, Map<string, number>>();
+const viewedAt = new Map<string, number>();
+/** Coins that left the feed list but are still tracked because a page has them open or a position holds them. */
+const kept = new Set<string>();
+let retainExtra: (mint: string) => boolean = () => false;
+
+/** Lets the engine keep coins it holds positions in tracked after they scroll out of the feed. */
+export function setRetainer(fn: (mint: string) => boolean) {
+  retainExtra = fn;
+}
+
+const retained = (mint: string, now = Date.now()) => now - (viewedAt.get(mint) ?? 0) < VIEW_RETAIN_MS || retainExtra(mint);
+
+function forget(mint: string) {
+  byMint.delete(mint);
+  traders.delete(mint);
+  devTokens.delete(mint);
+  curveStart.delete(mint);
+  tapes.delete(mint);
+  seqs.delete(mint);
+  holdings.delete(mint);
+  viewedAt.delete(mint);
+  kept.delete(mint);
+}
 
 export const recentLaunches = () => launches;
 export const getLaunch = (mint: string) => byMint.get(mint);
@@ -96,6 +143,7 @@ export function addLaunch(e: {
     simulated: e.simulated,
     priceSol: e.priceSol,
     marketCapSol: e.marketCapSol,
+    launchMarketCapSol: e.marketCapSol,
     athMarketCapSol: e.marketCapSol,
     curvePct: 0,
     liquiditySol: 0,
@@ -115,13 +163,15 @@ export function addLaunch(e: {
   byMint.set(l.mint, l);
   traders.set(l.mint, new Set());
   curveStart.set(l.mint, e.curveTokens && e.curveTokens > 0 ? e.curveTokens : CURVE_TOKENS);
+  tapes.set(l.mint, []);
+  holdings.set(l.mint, new Map());
+  const now = Date.now();
   while (launches.length > MAX_LAUNCHES) {
     const old = launches.pop()!;
-    byMint.delete(old.mint);
-    traders.delete(old.mint);
-    devTokens.delete(old.mint);
-    curveStart.delete(old.mint);
+    if (retained(old.mint, now)) kept.add(old.mint);
+    else forget(old.mint);
   }
+  for (const m of kept) if (!retained(m, now)) forget(m);
   notify();
   return l;
 }
@@ -139,6 +189,7 @@ export interface FeedTrade {
   realSolReserves?: number;
   /** Real tokens left on the curve after the trade, when the event carries it. */
   realTokenReserves?: number;
+  signature?: string;
 }
 
 export function applyTrade(t: FeedTrade): Launch | null {
@@ -158,8 +209,17 @@ export function applyTrade(t: FeedTrade): Launch | null {
     l.curvePct = clampPct((1 - t.realTokenReserves / start) * 100);
   }
   if (t.realSolReserves !== undefined) l.liquiditySol = t.realSolReserves;
+  const tokens = t.tokenAmount ?? (t.priceSol > 0 ? t.solAmount / t.priceSol : 0);
+  const seq = (seqs.get(t.mint) ?? 0) + 1;
+  seqs.set(t.mint, seq);
+  const tape = tapes.get(t.mint)!;
+  tape.push({ seq, ts: Date.now(), priceSol: t.priceSol, isBuy: t.isBuy, solAmount: t.solAmount, tokenAmount: tokens, trader: t.trader, byCreator: t.byCreator, signature: t.signature });
+  if (tape.length > MAX_TAPE) tape.splice(0, tape.length - MAX_TAPE);
+  const hold = holdings.get(t.mint)!;
+  const net = Math.max(0, (hold.get(t.trader) ?? 0) + (t.isBuy ? tokens : -tokens));
+  if (net > 0) hold.set(t.trader, net);
+  else hold.delete(t.trader);
   if (t.byCreator) {
-    const tokens = t.tokenAmount ?? (t.priceSol > 0 ? t.solAmount / t.priceSol : 0);
     const held = Math.max(0, (devTokens.get(t.mint) ?? 0) + (t.isBuy ? tokens : -tokens));
     devTokens.set(t.mint, held);
     l.devHoldPct = (held / TOTAL_SUPPLY) * 100;
@@ -169,6 +229,40 @@ export function applyTrade(t: FeedTrade): Launch | null {
   if (l.spark.length > SPARK_POINTS) l.spark.shift();
   notify();
   return l;
+}
+
+export interface Holder {
+  address: string;
+  tokens: number;
+  /** % of the 1B supply. */
+  pct: number;
+  isCreator: boolean;
+}
+
+/**
+ * Everything the coin page needs. Holders are net buys minus sells per wallet from the trades seen since launch,
+ * so wallet-to-wallet transfers are not counted. `after` returns only trades newer than that sequence number.
+ */
+export function tokenDetail(mint: string, after = 0) {
+  const l = byMint.get(mint);
+  if (!l) return null;
+  viewedAt.set(mint, Date.now());
+  const tape = tapes.get(mint) ?? [];
+  const all = [...(holdings.get(mint) ?? new Map<string, number>())]
+    .filter(([, t]) => t >= 1)
+    .sort((a, b) => b[1] - a[1]);
+  const holders: Holder[] = all.slice(0, 25).map(([address, tokens]) => ({ address, tokens, pct: (tokens / TOTAL_SUPPLY) * 100, isCreator: address === l.creator }));
+  const top10Pct = all.slice(0, 10).reduce((s, [, t]) => s + t, 0) / TOTAL_SUPPLY * 100;
+  return {
+    launch: l,
+    trades: after > 0 ? tape.filter((t) => t.seq > after) : tape,
+    /** Lets the page tell a trimmed or restarted tape from a gap and reload in full. */
+    firstSeq: tape[0]?.seq ?? 0,
+    lastSeq: seqs.get(mint) ?? 0,
+    holders,
+    holderCount: all.length,
+    top10Pct,
+  };
 }
 
 export function markMigrated(mint: string) {
@@ -292,6 +386,11 @@ export function _resetFeed() {
   traders.clear();
   devTokens.clear();
   curveStart.clear();
+  tapes.clear();
+  seqs.clear();
+  holdings.clear();
+  viewedAt.clear();
+  kept.clear();
   queue.length = 0;
 }
 

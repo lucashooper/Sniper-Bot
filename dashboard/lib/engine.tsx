@@ -81,6 +81,8 @@ interface Ctx {
   refresh: () => Promise<void>;
   /** Bumps whenever the engine says trades changed, so pages holding trade lists can re-fetch. */
   tradesVersion: number;
+  /** Bumps whenever the engine says the token feed moved (new launches, trades), so the coin page can re-fetch. */
+  feedVersion: number;
   reconnect: () => void;
   /** Hop-by-hop connection check, filled in while the engine is unreachable. */
   diagnosis: Check[] | null;
@@ -105,6 +107,7 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
     setDiagnosis(checks);
   }, []);
   const [tradesVersion, setTradesVersion] = useState(0);
+  const [feedVersion, setFeedVersion] = useState(0);
   const [epoch, setEpoch] = useState(0);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -158,6 +161,7 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
         } else if (msg.type === "log") setLogs((l) => (l.length > 800 ? [...l.slice(-600), msg.line] : [...l, msg.line]));
         else if (msg.type === "changed") {
           if (msg.topics.includes("trades")) setTradesVersion((v) => v + 1);
+          if (msg.topics.includes("launches")) setFeedVersion((v) => v + 1);
           // The token feed ticks constantly; fetch just the launches for it instead of the whole state.
           if (msg.topics.length === 1 && msg.topics[0] === "launches") {
             api<Pick<EngineState, "launches" | "solUsd">>("/api/launches").then(
@@ -183,7 +187,7 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <EngineCtx.Provider
-      value={{ state, logs, connected, error, refresh, tradesVersion, reconnect: () => setEpoch((e) => e + 1), diagnosis, runDiagnosis }}
+      value={{ state, logs, connected, error, refresh, tradesVersion, feedVersion, reconnect: () => setEpoch((e) => e + 1), diagnosis, runDiagnosis }}
     >
       {children}
     </EngineCtx.Provider>

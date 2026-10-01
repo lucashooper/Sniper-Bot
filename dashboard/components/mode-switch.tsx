@@ -51,15 +51,20 @@ export function ModeSwitch() {
         aria-label="Trading mode"
         onClick={() => (live ? void set(true) : setOpen(true))}
         className={cx(
-          "group inline-flex items-center gap-2 rounded-full border p-1 pr-3 text-xs font-semibold transition",
-          live ? "border-rose-500/60 bg-rose-500/15 text-rose-200 shadow-[0_0_24px_-6px_rgba(244,63,94,0.8)]" : "border-violet-500/40 bg-violet-500/10 text-violet-200",
+          "inline-flex h-9 items-center gap-2 rounded-full border px-3.5 text-xs font-semibold transition",
+          live ? "border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/15" : "border-neutral-800 bg-ink-800 text-neutral-300 hover:border-neutral-700 hover:text-neutral-100",
         )}
-        title={live ? "Live: click to return to simulation" : "Simulation: click to go live"}
+        title={live ? "Live: trades spend real SOL. Click to return to simulation" : "Simulation: paper trades only. Click to go live"}
       >
-        <span className={cx("grid h-6 w-6 place-items-center rounded-full", live ? "animate-pulse bg-rose-500 text-white" : "bg-violet-500/30")}>
-          {live ? <Zap size={13} /> : <FlaskConical size={13} />}
-        </span>
-        {live ? "LIVE EXECUTION" : "Simulation"}
+        {live ? (
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-400 opacity-60" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-rose-500" />
+          </span>
+        ) : (
+          <FlaskConical size={13} className="text-violet-300" />
+        )}
+        {live ? "Live" : "Simulation"}
       </button>
 
       <Modal
