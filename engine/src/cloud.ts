@@ -141,12 +141,25 @@ export async function flushBackups() {
  * missing from the backup. Throws (so the engine refuses to start) when Supabase is configured but unreachable:
  * starting blank would mint a new keystore and overwrite the backup that can still decrypt your wallets.
  */
+/** Turns the usual first-deploy Supabase failures into the fix. */
+function explain(e: unknown): Error {
+  const m = (e as Error).message;
+  if (/\b401\b|Invalid API key|invalid.*api.?key/i.test(m)) return new Error(`SUPABASE_SECRET_KEY was rejected by Supabase (${m}). Use the sb_secret_… key (or the service_role key) from Project Settings → API Keys, not the publishable key.`);
+  if (/\b403\b/.test(m)) return new Error(`SUPABASE_SECRET_KEY lacks admin rights (${m}). Use the sb_secret_… or service_role key, not the publishable key.`);
+  if (/engine_files|42P01|PGRST205|relation .* does not exist|schema cache/i.test(m)) return new Error(`The Supabase tables are missing (${m}). Run supabase/migrations/20261001000000_sniper_bot.sql in the Supabase SQL editor.`);
+  if (/fetch failed|ENOTFOUND|EAI_AGAIN|timeout/i.test(m)) return new Error(`The engine cannot reach SUPABASE_URL ${env.supabaseUrl} (${m}). Check the URL.`);
+  return e as Error;
+}
+
 export async function initCloud() {
-  ownerId = await resolveOwner();
-  cloudStatus.ownerResolved = true;
-  const rows = await rest<Array<{ name: string; data: unknown }>>(
-    `/rest/v1/engine_files?user_id=eq.${ownerId}&select=name,data`,
-  );
+  let rows: Array<{ name: string; data: unknown }>;
+  try {
+    ownerId = await resolveOwner();
+    cloudStatus.ownerResolved = true;
+    rows = await rest<Array<{ name: string; data: unknown }>>(`/rest/v1/engine_files?user_id=eq.${ownerId}&select=name,data`);
+  } catch (e) {
+    throw explain(e);
+  }
   const remote = new Map(rows.map((r) => [r.name, r.data]));
   const local = (n: string) => path.join(env.dataDir, n);
   fs.mkdirSync(env.dataDir, { recursive: true });
