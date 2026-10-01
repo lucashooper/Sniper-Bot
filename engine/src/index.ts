@@ -1,3 +1,4 @@
+import http from "node:http";
 import { env, hasSupabase, isPublicBind } from "./config.js";
 import { flushBackups, initCloud } from "./cloud.js";
 
@@ -26,7 +27,30 @@ async function boot() {
   process.once("SIGINT", () => void stop("SIGINT"));
 }
 
+/**
+ * When boot fails, keep answering on the engine's port instead of exiting: a crash loop only shows the host's
+ * generic "failed to respond" page, while this lets the dashboard print the exact reason. Nothing else is served,
+ * and no secret values appear in these messages.
+ */
+function serveStartupError(message: string) {
+  const server = http.createServer((req, res) => {
+    const headers = { "content-type": "application/json", "access-control-allow-origin": "*" };
+    const path = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (path === "/health") return res.writeHead(200, headers).end(JSON.stringify({ ok: false, startupError: message }));
+    res.writeHead(503, headers).end(JSON.stringify({ error: `Engine failed to start: ${message}` }));
+  });
+  server.on("upgrade", (_req, socket) => socket.destroy());
+  server.on("error", (e) => {
+    console.error(`Could not serve the startup error either: ${e.message}`);
+    process.exit(1);
+  });
+  server.listen(env.apiPort, env.apiHost, () =>
+    console.error(`Serving the startup error on http://${env.apiHost}:${env.apiPort}/health until the engine is fixed and redeployed`),
+  );
+}
+
 boot().catch((e) => {
-  console.error(`Engine failed to start: ${(e as Error).message}`);
-  process.exit(1);
+  const message = (e as Error).message;
+  console.error(`Engine failed to start: ${message}`);
+  serveStartupError(message);
 });

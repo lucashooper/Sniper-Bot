@@ -38,10 +38,14 @@ export async function diagnose(url: string, token?: string): Promise<Check[]> {
   add("Engine address", true, url);
 
   // 2. Is anything there, and is it the engine?
-  let health: { ok?: boolean; auth?: string; origin?: string | null; originAllowed?: boolean; allowedOrigins?: string[] } | null = null;
+  let health: { ok?: boolean; startupError?: string; auth?: string; origin?: string | null; originAllowed?: boolean; allowedOrigins?: string[] } | null = null;
   try {
     const r = await fetch(`${url}/health`, { signal: timeout(10_000), cache: "no-store" });
     health = await r.json().catch(() => null);
+    if (health?.startupError) {
+      add("Engine responds", false, `The engine is running but failed to start: ${health.startupError}. Fix that variable on the engine host (Railway → Variables); it redeploys by itself.`);
+      return out;
+    }
     if (!r.ok || !health?.ok) {
       add("Engine responds", false, `${url}/health answered HTTP ${r.status}${health ? "" : " without the engine's reply"}. Something else is answering at that address.`);
       return out;
