@@ -47,7 +47,10 @@ export async function checkMint(mintStr: string): Promise<SafetyReport> {
   const mint = new PublicKey(mintStr);
   const conn = connection();
   const info = await conn.getAccountInfo(mint);
-  if (!info) return { mint: mintStr, ok: false, checks: [{ name: "Mint exists", pass: false, detail: "account not found" }] };
+  if (!info) {
+    log.warn("safety", `Blocked ${mintStr.slice(0, 6)}…: mint account not found on the RPC yet`, { mint: mintStr });
+    return { mint: mintStr, ok: false, checks: [{ name: "Mint exists", pass: false, detail: "the RPC has no account for this mint yet (brand-new coin on a lagging RPC, or a wrong address)" }] };
+  }
   const m = unpackMint(mint, info, info.owner);
   const checks: SafetyCheck[] = [];
 
@@ -93,7 +96,9 @@ export async function checkMint(mintStr: string): Promise<SafetyReport> {
       checks.push({
         name: "Top holder",
         pass: top <= s.maxTopHolderPct,
-        detail: topOwner ? `${top.toFixed(1)}% held by ${topOwner.slice(0, 4)}…${topOwner.slice(-4)}` : "no concentrated holder",
+        detail: topOwner
+          ? `${top.toFixed(1)}% held by ${topOwner.slice(0, 4)}…${topOwner.slice(-4)} (your limit is ${s.maxTopHolderPct}%, set under Snipe Configuration)`
+          : "no concentrated holder",
       });
     } catch (e) {
       checks.push({ name: "Top holder", pass: true, detail: `skipped: ${(e as Error).message}` });

@@ -4,7 +4,7 @@ import zlib from "node:zlib";
 import { WebSocketServer, type WebSocket } from "ws";
 import { env, hasRpc, hasSupabase, isPublicBind } from "./config.js";
 import { checkOwnerToken, cloudStatus, type AuthResult } from "./cloud.js";
-import { bus, log, type LogLine } from "./bus.js";
+import { bus, DetailedError, log, type LogLine } from "./bus.js";
 import { recentLaunches, solUsd, takeDirty, tapeBounds, tapeSince, tokenDetail, touchView, type Launch } from "./feed.js";
 import { isUnlocked } from "./keystore.js";
 import {
@@ -92,11 +92,18 @@ route("POST", "/api/groups/:id/generate", (b, p) => generateIntoGroup(p.id, Numb
 route("POST", "/api/groups/:id/fund", (b, p) => fundGroup(p.id, Number(b.sol)));
 
 route("POST", "/api/safety", (b) => checkMint(String(b.mint)));
-route("POST", "/api/snipe", (b) =>
-  executeBuy({ mint: String(b.mint).trim(), walletId: String(b.walletId ?? ""), sol: Number(b.sol), reason: "manual" }),
-);
+route("POST", "/api/snipe", (b) => {
+  const mint = String(b.mint).trim();
+  return executeBuy({ mint, walletId: String(b.walletId ?? ""), sol: Number(b.sol), reason: "manual" }).catch((e) => {
+    log.error("trade", `Buy of ${Number(b.sol)} SOL failed: ${(e as Error).message}`, { mint });
+    throw e;
+  });
+});
 route("POST", "/api/positions/:key/sell", (b, p) =>
-  executeSell(decodeURIComponent(p.key), Number(b.pct ?? 100), Number(b.pct) >= 100 ? "panic" : "manual"),
+  executeSell(decodeURIComponent(p.key), Number(b.pct ?? 100), Number(b.pct) >= 100 ? "panic" : "manual").catch((e) => {
+    log.error("trade", `Sell of ${Number(b.pct ?? 100)}% failed: ${(e as Error).message}`);
+    throw e;
+  }),
 );
 
 route("POST", "/api/positions/sell-all", (b) =>
@@ -227,7 +234,8 @@ export function startServer() {
       sendJson(req, res, 200, out ?? { ok: true });
     } catch (e) {
       const code = e instanceof HttpError ? e.code : 400;
-      res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify({ error: (e as Error).message }));
+      const details = e instanceof DetailedError ? e.details : undefined;
+      res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify({ error: (e as Error).message, details }));
     }
   });
 

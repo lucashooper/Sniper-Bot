@@ -29,9 +29,7 @@ export function PositionsTable() {
   /** Sells 100% from every wallet holding `mint` (or every open position when no mint), each wallet at once. */
   const sellAll = async (mint?: string) => {
     const hit = positions.filter((p) => !mint || p.mint === mint);
-    const live = hit.some((p) => p.mode === "live");
     const what = mint ? `${hit[0]?.symbol} from all ${hit.length} wallets` : `all ${hit.length} open positions`;
-    if (!confirm(`${live ? "LIVE: " : ""}Sell 100% of ${what}?`)) return;
     setBusy(`all:${mint ?? ""}`);
     try {
       const r = await api<SellAllResult>("/api/positions/sell-all", { method: "POST", body: mint ? { mint } : {} });

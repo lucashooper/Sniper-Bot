@@ -2,7 +2,7 @@
 
 import { AnimatePresence, m } from "framer-motion";
 import { Check, Copy, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
@@ -195,9 +195,12 @@ export function Td({ children, className }: { children?: React.ReactNode; classN
 
 export function useToast() {
   const [msg, setMsg] = useState<{ text: string; tone: "ok" | "err" } | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Errors stay up long enough to read the reason (or until clicked away); a newer toast replaces the old one's timer.
   const show = (text: string, tone: "ok" | "err" = "ok") => {
     setMsg({ text, tone });
-    setTimeout(() => setMsg(null), 3500);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setMsg(null), tone === "err" ? 15_000 : 3500);
   };
   const node = (
     <AnimatePresence>
@@ -206,8 +209,10 @@ export function useToast() {
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 12 }}
+          onClick={() => setMsg(null)}
+          title="Click to dismiss"
           className={cx(
-            "fixed bottom-5 right-5 z-50 max-w-sm rounded-xl border px-4 py-3 text-sm shadow-xl",
+            "fixed bottom-5 right-5 z-50 max-w-sm cursor-pointer rounded-xl border px-4 py-3 text-sm shadow-xl",
             msg.tone === "ok" ? "border-emerald-500/30 bg-ink-900 text-emerald-200" : "border-rose-500/30 bg-ink-900 text-rose-200",
           )}
         >
