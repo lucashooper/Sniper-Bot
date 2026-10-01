@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Crown, ExternalLink, Flame, Search, ShieldAlert, Users, Zap } from "lucide-react";
-import { api, useEngine } from "@/lib/engine";
+import { api, useEngine, type ApiError } from "@/lib/engine";
 import { takePrefetched } from "@/lib/token-cache";
 import { accountUrl, coinPage, compact, pct, short, solscan, time } from "@/lib/format";
 import type { Launch, Position, SellAllResult, TapeTrade, TokenDetail, Trade } from "@/lib/types";
@@ -461,6 +461,8 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
   const [amount, setAmount] = useState("");
   const [walletId, setWalletId] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [since, setSince] = useState(0);
+  const [lastError, setLastError] = useState<{ message: string; solscan?: string } | null>(null);
   if (!state) return null;
   const live = state.status.live;
   const presets = state.settings.quickBuyPresets ?? [0.1, 0.5, 1];
@@ -474,11 +476,16 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
   const buy = async (n: number) => {
     if (!(n > 0)) return toast.show("Enter an amount in SOL", "err");
     setBusy("buy");
+    setSince(Date.now());
+    setLastError(null);
     try {
       await api("/api/snipe", { method: "POST", body: { mint, walletId: chosen, sol: n } });
       toast.show(`${live ? "Bought" : "Paper bought"} ${n} SOL of ${symbol}`);
     } catch (e) {
       toast.show((e as Error).message, "err");
+      // Stays under the button after the toast fades, with the transaction link when one was sent.
+      const link = (e as ApiError).details?.solscan;
+      setLastError({ message: (e as Error).message, solscan: typeof link === "string" ? link : undefined });
     } finally {
       setBusy(null);
     }
@@ -565,8 +572,22 @@ function TradePanel({ mint, symbol, priceSol, positions, migrated }: { mint: str
               </span>
             </div>
             <Button variant="success" size="lg" className="w-full font-semibold" disabled={busy !== null || !(sol > 0)} onClick={() => void buy(sol)}>
-              <Zap size={15} /> {busy === "buy" ? "Buying…" : `Buy ${symbol}`}
+              <Zap size={15} /> {busy === "buy" ? <>{live ? "Sending" : "Buying"}… <Elapsed since={since} /></> : `Buy ${symbol}`}
             </Button>
+            {lastError && (
+              <p className="rounded-md border border-rose-500/20 bg-rose-500/[0.06] px-2.5 py-2 text-[11px] leading-relaxed text-rose-300">
+                {lastError.message}
+                {lastError.solscan && (
+                  <>
+                    {" "}
+                    <a href={lastError.solscan} target="_blank" rel="noreferrer" className="underline">
+                      View transaction
+                    </a>
+                  </>
+                )}{" "}
+                <span className="text-rose-300/60">Full detail in the browser console.</span>
+              </p>
+            )}
             {migrated && <p className="text-[11px] text-neutral-500">Graduated coin: the buy routes through its PumpSwap pool.</p>}
           </div>
         ) : (
@@ -727,4 +748,10 @@ function OpenByAddress() {
       </form>
     </div>
   );
+}
+
+/** Seconds since a live order went out: a live buy can take up to a minute to land or be proven expired. */
+function Elapsed({ since }: { since: number }) {
+  const now = useNow();
+  return <span className="tabular-nums opacity-70">{Math.max(0, Math.round((now - since) / 1000))}s</span>;
 }

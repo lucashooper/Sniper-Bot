@@ -10,7 +10,8 @@ import { createCloseAccountInstruction, getAssociatedTokenAddressSync } from "@s
 import { env, hasRpc } from "./config.js";
 import { DetailedError, log } from "./bus.js";
 import { dynamicPriorityFee } from "./fees.js";
-import { sendBundle, signatureOf, tipFloorSol, tipInstruction, waitForBundle } from "./jito.js";
+import { tipFloorSol, tipInstruction } from "./jito.js";
+import { explainError, landTransaction } from "./land.js";
 import { getGroup } from "./groups.js";
 import {
   findPosition,
@@ -79,7 +80,7 @@ async function landSwap(opts: {
     ? Math.max(s.priorityFeeMicroLamports, 1_000_000)
     : s.priorityFeeMicroLamports || (await dynamicPriorityFee(opts.hotAccounts));
   const tip = await tipSol(opts.emergency);
-  const { blockhash } = await conn.getLatestBlockhash("confirmed");
+  const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
   const msg = new TransactionMessage({
     payerKey: opts.kp.publicKey,
     recentBlockhash: blockhash,
@@ -93,20 +94,34 @@ async function landSwap(opts: {
   const tx = new VersionedTransaction(msg);
   tx.sign([opts.kp]);
 
+  const priorityFeeSol = (cuPrice * s.computeUnitLimit) / 1e6 / LAMPORTS;
+  const numbers = { jitoTipSol: tip, priorityFeeSol, cuPrice, computeUnitLimit: s.computeUnitLimit, slippagePct: s.slippagePct };
   const sim = await conn.simulateTransaction(tx, { sigVerify: false, commitment: "processed" });
   if (sim.value.err) {
-    const tail = (sim.value.logs ?? []).slice(-3).join(" | ");
-    throw new Error(`Simulation failed: ${JSON.stringify(sim.value.err)} ${tail}`);
+    const logs = sim.value.logs ?? [];
+    const balance = (await conn.getBalance(opts.kp.publicKey, "processed").catch(() => NaN)) / LAMPORTS;
+    throw new DetailedError(`${opts.label} failed its pre-send simulation, nothing was sent or spent: ${explainError(sim.value.err, logs)}`, {
+      stage: "simulate",
+      mint: opts.mint.toBase58(),
+      wallet: opts.kp.publicKey.toBase58(),
+      balanceSol: balance,
+      ...numbers,
+      simulationError: sim.value.err,
+      unitsConsumed: sim.value.unitsConsumed,
+      logs: logs.slice(-15),
+    });
   }
-
-  const signature = signatureOf(tx);
-  const bundleId = await sendBundle([tx]);
-  log.info("jito", `${opts.label}: bundle ${short(bundleId)} submitted, tip ${tip.toFixed(4)} SOL, CU price ${cuPrice}`, {
-    signature,
+  log.info("trade", `${opts.label}: simulation OK (${sim.value.unitsConsumed ?? "?"} CU), sending with tip ${tip.toFixed(4)} SOL, CU price ${cuPrice}`, {
+    mint: opts.mint.toBase58(),
   });
-  const res = await waitForBundle(bundleId);
-  if (res.status !== "Landed") throw new Error(`Bundle ${short(bundleId)} ${res.status.toLowerCase()}`);
-  log.success("jito", `${opts.label}: landed in slot ${res.slot ?? "?"}`, { signature, mint: opts.mint.toBase58() });
+
+  const res = await landTransaction(tx, { label: opts.label, lastValidBlockHeight, mint: opts.mint.toBase58(), numbers });
+  const { signature } = res;
+  const bundleId = res.bundleId ?? "";
+  log.success("jito", `${opts.label}: landed in slot ${res.slot ?? "?"} after ${((res.steps.at(-1)?.ms ?? 0) / 1000).toFixed(1)} s`, {
+    signature,
+    mint: opts.mint.toBase58(),
+  });
 
   // Settle from the confirmed transaction so the ledger holds real amounts, not quotes.
   let parsed = null;
@@ -114,7 +129,6 @@ async function landSwap(opts: {
     parsed = await conn.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
     if (!parsed) await new Promise((r) => setTimeout(r, 700));
   }
-  const priorityFeeSol = (cuPrice * s.computeUnitLimit) / 1e6 / LAMPORTS;
   if (!parsed?.meta) {
     return { signature, bundleId, priorityFeeSol, jitoTipSol: tip, networkFeeSol: 0.000005, solMoved: NaN, tokensMoved: NaN };
   }
@@ -157,9 +171,11 @@ async function ensureFunds(walletName: string, owner: PublicKey, sol: number, mi
   const balance = (await connection().getBalance(owner, "confirmed")) / LAMPORTS;
   const tip = await tipSol(false);
   const priority = ((s.priorityFeeMicroLamports || 100_000) * s.computeUnitLimit) / 1e6 / LAMPORTS;
-  const need = sol + tip + priority + ACCOUNT_RENT_SOL + 0.00001;
+  // Pump.fun and PumpSwap take ~1.25% on top of the amount; 2% covers it with room.
+  const venueFee = sol * 0.02;
+  const need = sol + venueFee + tip + priority + ACCOUNT_RENT_SOL + 0.00001;
   if (balance >= need) return;
-  const parts = `${sol} buy + ${tip} Jito tip + ~${priority.toFixed(4)} priority fee + up to ${ACCOUNT_RENT_SOL} token account rent`;
+  const parts = `${sol} buy + ~${venueFee.toFixed(4)} Pump.fun fee + ${tip} Jito tip + ~${priority.toFixed(4)} priority fee + up to ${ACCOUNT_RENT_SOL} token account rent`;
   throw new DetailedError(`Not enough SOL in ${walletName}: it has ${balance.toFixed(4)} SOL, this buy needs about ${need.toFixed(4)} SOL (${parts})`, {
     stage: "balance",
     mint,
@@ -169,6 +185,7 @@ async function ensureFunds(walletName: string, owner: PublicKey, sol: number, mi
     buySol: sol,
     jitoTipSol: tip,
     priorityFeeSol: priority,
+    venueFeeSol: venueFee,
     accountRentSol: ACCOUNT_RENT_SOL,
   });
 }

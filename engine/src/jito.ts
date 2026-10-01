@@ -24,6 +24,13 @@ let tipAccounts = [
   "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
 ];
 
+/** A Jito answer that was not a result: HTTP status, JSON-RPC error and the raw body, so the caller can say exactly what Jito said. */
+export class JitoError extends Error {
+  constructor(message: string, public http: number, public body: string) {
+    super(message);
+  }
+}
+
 async function rpc<T>(path: string, method: string, params: unknown[]): Promise<T> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (env.jitoAuthUuid) headers["x-jito-auth"] = env.jitoAuthUuid;
@@ -31,9 +38,20 @@ async function rpc<T>(path: string, method: string, params: unknown[]): Promise<
     method: "POST",
     headers,
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    signal: AbortSignal.timeout(8_000),
   });
-  const json = (await res.json()) as { result?: T; error?: { message: string } };
-  if (!res.ok || json.error) throw new Error(json.error?.message ?? `Jito HTTP ${res.status}`);
+  const text = await res.text();
+  let json: { result?: T; error?: { code?: number; message?: string } } = {};
+  try {
+    json = JSON.parse(text);
+  } catch {
+    /* plain-text body (429 pages, proxies); reported below */
+  }
+  if (!res.ok || json.error) {
+    const why = json.error?.message ?? (text.slice(0, 200) || "empty body");
+    const hint = res.status === 429 ? " (Jito rate limit: 1 request per second per IP unless JITO_AUTH_UUID is set)" : "";
+    throw new JitoError(`Jito ${method} HTTP ${res.status}: ${why}${hint}`, res.status, text.slice(0, 500));
+  }
   return json.result as T;
 }
 
@@ -69,31 +87,29 @@ export async function sendBundle(txs: VersionedTransaction[]): Promise<string> {
   return rpc<string>("/api/v1/bundles", "sendBundle", [encoded, { encoding: "base64" }]);
 }
 
-type InflightStatus = "Invalid" | "Pending" | "Failed" | "Landed";
+export type InflightStatus = "Invalid" | "Pending" | "Failed" | "Landed";
 
-/** Polls until the bundle lands, fails, or times out. Returns the final status and landed slot if any. */
-export async function waitForBundle(bundleId: string, timeoutMs = 30_000): Promise<{ status: InflightStatus | "Timeout"; slot?: number }> {
-  const start = Date.now();
-  let last: InflightStatus = "Pending";
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await rpc<{ value: Array<{ status: InflightStatus; landed_slot: number | null }> }>(
-        "/api/v1/getInflightBundleStatuses",
-        "getInflightBundleStatuses",
-        [[bundleId]],
-      );
-      const v = res.value?.[0];
-      if (v) {
-        last = v.status;
-        if (v.status === "Landed") return { status: "Landed", slot: v.landed_slot ?? undefined };
-        if (v.status === "Failed") return { status: "Failed" };
-      }
-    } catch {
-      /* transient; keep polling */
-    }
-    await new Promise((r) => setTimeout(r, 800));
-  }
-  return { status: last === "Invalid" ? "Invalid" : "Timeout" };
+/**
+ * One look at a bundle. Jito's meanings: Invalid = "bundle ID not in our system (5 minute look back)", Pending = not
+ * failed/landed/invalid yet, Failed = every region that received it marked it failed, Landed = on chain.
+ */
+export async function bundleStatus(bundleId: string): Promise<{ status: InflightStatus; slot?: number } | null> {
+  const res = await rpc<{ value: Array<{ status: InflightStatus; landed_slot: number | null }> | null }>(
+    "/api/v1/getInflightBundleStatuses",
+    "getInflightBundleStatuses",
+    [[bundleId]],
+  );
+  const v = res?.value?.[0];
+  return v ? { status: v.status, slot: v.landed_slot ?? undefined } : null;
+}
+
+/**
+ * Jito's sendTransaction: forwards one signed transaction straight to the leader. Re-sending a transaction that is
+ * already in a bundle is safe: it carries the same signature, and Solana executes a signature at most once.
+ */
+export async function sendTransaction(tx: VersionedTransaction): Promise<string> {
+  const encoded = Buffer.from(tx.serialize()).toString("base64");
+  return rpc<string>("/api/v1/transactions", "sendTransaction", [encoded, { encoding: "base64" }]);
 }
 
 export const signatureOf = (tx: VersionedTransaction) => bs58.encode(tx.signatures[0]);

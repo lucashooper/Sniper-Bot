@@ -64,6 +64,10 @@ export async function api<T = unknown>(path: string, init?: { method?: string; b
     if (init?.body !== undefined) console.info("request", init.body);
     if (details) console.info("details", details);
     if (Array.isArray(details?.failed)) console.table(details.failed);
+    // A live order's path: Jito bundle, re-broadcasts, chain status, with timings.
+    if (Array.isArray(details?.steps)) console.table(details.steps);
+    if (Array.isArray(details?.logs)) console.info("program logs\n" + (details.logs as string[]).join("\n"));
+    if (typeof details?.solscan === "string") console.info("transaction", details.solscan);
     console.groupEnd();
     throw err;
   }
