@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
 import { useState } from "react";
+import { CheckCircle2, CircleDashed, XCircle } from "lucide-react";
 import { ArrowDownToLine, BarChart3, Crosshair, KeyRound, LayoutDashboard, LogOut, Radio, Wallet } from "lucide-react";
 import { DEFAULT_URL, readConn, useEngine } from "@/lib/engine";
 import { useAuth } from "./auth-gate";
@@ -129,39 +130,52 @@ export function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Explains why the engine is unreachable in terms of what to change, not just that it failed. */
+/** Explains why the engine is unreachable, using the hop-by-hop check when it has run. */
 function OfflineNotice({ error }: { error: string | null }) {
+  const { diagnosis, runDiagnosis } = useEngine();
+  const [busy, setBusy] = useState(false);
   const url = readConn().url;
-  const local = /\/\/(127\.0\.0\.1|localhost)/.test(url);
-  const onHttps = typeof window !== "undefined" && window.location.protocol === "https:";
+  const failed = diagnosis?.find((c) => !c.ok);
   let msg: React.ReactNode;
-  if (error === "unauthorized") {
-    msg = <>The engine rejected this sign-in. Check that <code className="font-mono">OWNER_EMAIL</code> on the engine host matches the account you signed in with.</>;
-  } else if (local && onHttps) {
-    msg = (
-      <>
-        This site is pointed at <code className="font-mono">{url}</code>, which is your own computer, not the server. Set{" "}
-        <code className="font-mono">NEXT_PUBLIC_ENGINE_URL</code> on Netlify to your engine&apos;s https address and redeploy
-        {url !== DEFAULT_URL && <>, or fix the address saved under Settings</>}.
-      </>
-    );
-  } else if (onHttps && url.startsWith("http://")) {
-    msg = <>An https site cannot call an http engine. Use the engine&apos;s https address (Railway gives you one).</>;
-  } else if (error === "unreachable" || error === "bad-url") {
-    msg = local ? (
-      <>Start the engine with <code className="font-mono">npm run dev:engine</code>, or set its address under Settings.</>
-    ) : (
-      <>Cannot reach <code className="font-mono">{url}</code>. Check the engine is running on its host and that this site&apos;s address is in its <code className="font-mono">DASHBOARD_ORIGINS</code>.</>
-    );
-  } else {
-    msg = <>Connecting to <code className="font-mono">{url}</code>…</>;
-  }
+  if (failed) msg = <><span className="text-neutral-100">{failed.label}:</span> {failed.detail}</>;
+  else if (error === "unauthorized") msg = <>The engine rejected this sign-in. Running a check for the exact reason…</>;
+  else if (!diagnosis) msg = <>Connecting to <code className="font-mono">{url}</code>…</>;
+  else msg = <>Every check passed just now; reconnecting.</>;
   return (
-    <div className="mx-4 mt-4 flex gap-3 rounded-xl border border-neutral-800 bg-ink-900 px-4 py-3 text-sm text-neutral-300 md:mx-8">
-      <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-neutral-500" />
-      <div>
-        <span className="font-medium text-neutral-100">Engine offline. Nothing is trading.</span> {msg}
+    <div className="mx-4 mt-4 rounded-xl border border-neutral-800 bg-ink-900 px-4 py-3 text-sm text-neutral-300 md:mx-8">
+      <div className="flex gap-3">
+        <span className={cx("mt-1.5 h-2 w-2 shrink-0 rounded-full", failed ? "bg-rose-400" : "bg-neutral-500")} />
+        <div className="min-w-0 flex-1">
+          <span className="font-medium text-neutral-100">Engine offline. Nothing is trading.</span> {msg}
+          {url === DEFAULT_URL ? null : <span className="text-neutral-500"> (address saved under Settings: {url})</span>}
+        </div>
+        <button
+          onClick={async () => (setBusy(true), await runDiagnosis().finally(() => setBusy(false)))}
+          disabled={busy}
+          className="h-7 shrink-0 rounded-lg border border-neutral-800 bg-ink-800 px-2.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-50"
+        >
+          {busy ? "Checking…" : "Check again"}
+        </button>
       </div>
+      {diagnosis && (
+        <ol className="mt-3 space-y-1.5 border-t border-neutral-800 pt-3 text-xs">
+          {diagnosis.map((c) => (
+            <li key={c.label} className="flex gap-2">
+              {c.ok ? <CheckCircle2 size={14} className="mt-px shrink-0 text-emerald-400" /> : <XCircle size={14} className="mt-px shrink-0 text-rose-400" />}
+              <span className={c.ok ? "text-neutral-400" : "text-neutral-200"}>
+                <span className="font-medium">{c.label}</span>{c.ok ? `: ${c.detail}` : ""}
+              </span>
+            </li>
+          ))}
+          {["Engine address", "Engine responds", "Engine accepts this site", "Sign-in accepted", "Live connection"]
+            .slice(diagnosis.length)
+            .map((l) => (
+              <li key={l} className="flex gap-2 text-neutral-600">
+                <CircleDashed size={14} className="mt-px shrink-0" /> {l}
+              </li>
+            ))}
+        </ol>
+      )}
     </div>
   );
 }
